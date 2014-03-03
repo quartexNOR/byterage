@@ -59,18 +59,38 @@
 
   Version 1.1.1
 
-  - [12.10.2011] - Added support for LoadFromUrl
-  - [25.10.2013] - Added support for Reader and Writer classes
-  - [26.10.2013] - Added support for Bit-access and Part Access
-  - [28.10.2013] - Added support for Records and field management
+  - [12.10.2011]  - Added support for LoadFromUrl
+  - [25.10.2013]  - Added support for Reader and Writer classes
+  - [26.10.2013]  - Added support for Bit-access and Part Access
+  - [28.10.2013]  - Added support for Records and field management
+  - [03.03.2014]  - Fixed ReadString problem (wrote int length, read word length)
+                  - Added ZLib support
+                  - Added CompressTo / DecompressFrom methods
+                  - Added Compress() and Decompress() method
+                  - Added TBRObject and TBRPersistent
 
   ########################################################################### *)
 
-  {$I 'brage.inc'}
+  {.$DEFINE BR_SUPPORT_INTERNET}
+  {$DEFINE BR_SUPPORT_VARIANTS}
+  {.$DEFINE BR_DEBUG}
+  {$DEFINE BR_SUPPORT_ZLIB}
 
   interface
 
-  uses sysutils, classes, math, Contnrs;
+  uses
+  System.Sysutils, System.classes,
+  System.Math,
+  System.Generics.Defaults,
+  System.Generics.Collections,
+  {$IFDEF BR_SUPPORT_ZLIB}
+  System.Zlib,
+  {$ENDIF}
+  {$IFDEF BR_SUPPORT_VARIANTS}
+  System.Variants,
+  {$ENDIF}
+  System.Contnrs
+  ;
 
   const
   CNT_BR_KILOBYTE  = 1024;
@@ -86,7 +106,8 @@
 
   CNT_BR_ASTRING_HEADER   = $DB07;
   CNT_BR_WSTRING_HEADER   = $DB09;
-  CNT_BR_VARIANT_HEADER   = $DB0A;
+  CNT_BR_USTRING_HEADER   = $DB0A;
+  CNT_BR_VARIANT_HEADER   = $DB0B;
   CNT_BR_COMPONT_HEADER   = $DBCA;
   CNT_RECORD_HEADER       = $ABBABABE;
 
@@ -100,6 +121,9 @@
   EBRRecordFieldError = Class(Exception);
   EBRRecordError      = Class(Exception);
 
+  EBRObject           = Class(Exception);
+  EBRPersistent       = Class(EBRObject);
+
   (* Forward declarations *)
   TBRBuffer           = Class;
   TBRReader           = Class;
@@ -110,14 +134,167 @@
   TBRBitAccess        = Class;
   TBRPartsAccess      = Class;
   TBRRecordField      = Class;
+
+  TBRObject           = Class;
+  TBRPersistent       = Class;
+
+  TBRObjectClass      = class of TBRObject;
+
   TBRRecordFieldClass = Class of TBRRecordField;
   TBRRecordFieldArray = Array of TBRRecordFieldClass;
+
+  TBRObjectState      = set of (
+                        osCreating,
+                        osDestroying,
+                        osUpdating,
+                        osReadWrite,
+                        osSilent
+                        );
+
+  IBROwnedObject = Interface
+  ['{286A5B65-D5F6-4008-8095-7978CE74C666}']
+    Function  GetParent:TObject;
+    Procedure SetParent(Const Value:TObject);
+  End;
+
+  IBRObject = Interface
+    ['{FFF8E7BF-ADC9-4245-8717-E9A6C567DED9}']
+    Procedure SetObjectState(Const Value:TBRObjectState);
+    Procedure AddObjectState(Const Value:TBRObjectState);
+    Procedure RemoveObjectState(Const Value:TBRObjectState);
+    Function  GetObjectState:TBRObjectState;
+    Function  QueryObjectState(Const Value:TBRObjectState):Boolean;
+    Function  GetObjectClass:TBRObjectClass;
+  End;
+
+  IBRPersistent = Interface
+    ['{282CC310-CD3B-47BF-8EB0-017C1EDF0BFC}']
+    Procedure   ObjectFrom(Const Reader:TBRReader);
+    Procedure   ObjectFromStream(Const Stream:TStream;
+                Const Disposable:Boolean);
+    Procedure   ObjectFromData(Const Data:TBRBuffer;
+                Const Disposable:Boolean);
+    Procedure   ObjectFromFile(Const Filename:String);
+
+    Procedure   ObjectTo(Const Writer:TBRWriter);
+    Function    ObjectToStream:TStream;overload;
+    Procedure   ObjectToStream(Const Stream:TStream);overload;
+    Function    ObjectToData:TBRBuffer;overload;
+    Procedure   ObjectToData(Const Data:TBRBuffer);overload;
+    Procedure   ObjectToFile(Const Filename:String);
+  End;
+
+  (* Generic progress events *)
+  TBRProcessBeginsEvent = Procedure
+    (Const Sender:TObject;Const Primary:Integer) of Object;
+
+  TBRProcessUpdateEvent = Procedure
+    (Const Sender:TObject;Const Value,Primary:Integer) of Object;
+
+  TBRProcessEndsEvent = Procedure
+    (Const Sender:TObject;Const Primary,Secondary:Integer) of Object;
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  TBRDeflateEvents = Record
+    OnComprBegins:  TBRProcessBeginsEvent;
+    OnComprUpdate:  TBRProcessUpdateEvent;
+    OnComprEnds:    TBRProcessEndsEvent;
+  End;
+
+  TBRInflateEvents = Record
+    OnComprBegins:  TBRProcessBeginsEvent;
+    OnComprUpdate:  TBRProcessUpdateEvent;
+    OnComprEnds:    TBRProcessEndsEvent;
+  End;
+  {$ENDIF}
 
   (* custom 3byte record for our FillTriple class procedure *)
   PBRTripleByte = ^TBRTripleByte;
   TBRTripleByte = Packed record
     a,b,c:Byte;
   End;
+
+
+  TBRObject = Class(TPersistent,IBROwnedObject,IBRObject)
+  Strict private
+    FState:     TBRObjectState;
+    FParent:    TObject;
+  Strict protected
+    (* Implements:: IBROwnedObject *)
+    Function    GetParent:TObject;virtual;
+    Property    Parent:TObject read GetParent;
+  Strict protected
+    (* Implements:: IBRObject *)
+    Procedure   SetParent(Const Value:TObject);
+    Procedure   SetObjectState(Const Value:TBRObjectState);
+    Procedure   AddObjectState(Const Value:TBRObjectState);
+    Procedure   RemoveObjectState(Const Value:TBRObjectState);
+    Function    QueryObjectState(Const Value:TBRObjectState):Boolean;
+    Function    GetObjectState:TBRObjectState;
+    Function    GetObjectClass:TBRObjectClass;
+  Protected
+    (* implements:: IUnknown *)
+    function    QueryInterface(const IID:TGUID;
+                out Obj):HResult;virtual;stdcall;
+    function    _AddRef: Integer;virtual;stdcall;
+    function    _Release: Integer;virtual;stdcall;
+  Public
+    Class Function ObjectPath:String;
+    Procedure   AfterConstruction;override;
+    Procedure   BeforeDestruction;Override;
+    Constructor Create;virtual;
+  End;
+
+  TBRPersistent = Class(TBRObject,IBRPersistent)
+  Private
+    FObjId:     Longword;
+    FUpdCount:  Integer;
+  strict protected
+    (* Implements:: IBRPersistent *)
+    Procedure   ObjectTo(Const Writer:TBRWriter);
+    Procedure   ObjectFrom(Const Reader:TBRReader);
+    Procedure   ObjectFromStream(Const Stream:TStream;
+                Const Disposable:Boolean);
+    Function    ObjectToStream:TStream;overload;
+    Procedure   ObjectToStream(Const Stream:TStream);overload;
+    Procedure   ObjectFromData(Const Binary:TBRBuffer;
+                Const Disposable:Boolean);
+    Function    ObjectToData:TBRBuffer;overload;
+    Procedure   ObjectToData(Const Binary:TBRBuffer);overload;
+    Procedure   ObjectFromFile(Const Filename:String);
+    Procedure   ObjectToFile(Const Filename:String);
+  Protected
+    Procedure   BeforeUpdate;virtual;
+    procedure   AfterUpdate;virtual;
+  Protected
+    (* Persistency Read/Write methods *)
+    Procedure   BeforeReadObject;virtual;
+    Procedure   AfterReadObject;Virtual;
+    Procedure   BeforeWriteObject;Virtual;
+    procedure   AfterWriteObject;Virtual;
+    Procedure   WriteObject(Const Writer:TBRWriter);virtual;
+    Procedure   ReadObject(Const Reader:TBRReader);virtual;
+  protected
+    (* Standard persistence *)
+    Procedure   ReadObjBin(Stream:TStream);virtual;
+    procedure   WriteObjBin(Stream:TStream);virtual;
+    procedure   DefineProperties(Filer: TFiler);override;
+  Public
+    Property    UpdateCount:Integer read FUpdCount;
+
+    Procedure   Assign(Source:TPersistent);override;
+
+    Function    ObjectIdentifier:Longword;
+
+    Function    BeginUpdate:Boolean;
+    procedure   EndUpdate;
+
+    Class Function ClassIdentifier:Longword;
+
+    Constructor Create;override;
+  End;
+
+
 
   (* This class allows you to access a buffer regardless of how its
      implemented, through a normal stream. This makes it very easy to
@@ -154,6 +331,12 @@
   private
     (* Buffer capabilities. I.E: Readable, writeable etc. *)
     FCaps:      TBRBufferCapabilities;
+
+    {$IFDEF BR_SUPPORT_ZLIB}
+    FZDEvents:  TBRDeflateEvents;
+    FZIEvents:  TBRInflateEvents;
+    {$ENDIF}
+
     Procedure   SetSize(Const aNewSize:Int64);
   Protected
     (*  Standard persistence. Please note that we call the function
@@ -205,6 +388,13 @@
     Property    Empty:Boolean read GetEmpty;
     Property    Capabilities:TBRBufferCapabilities read FCaps;
     Property    Size:Int64 read DoGetDataSize write SetSize;
+
+
+    {$IFDEF BR_SUPPORT_ZLIB}
+    Property    ZLibDeflateEvents:TBRDeflateEvents read FZDEvents write FZDEvents;
+    Property    ZLibInflateEvents:TBRInflateEvents read FZIEvents write FZIEvents;
+    {$ENDIF}
+
 
     Procedure   Assign(Source:TPersistent);Override;
 
@@ -270,6 +460,15 @@
     (* Import data from various input sources *)
     Function    ImportFrom(aByteIndex:Int64;
                 aLength:Integer;Const Reader:TReader):Integer;
+
+    {$IFDEF BR_SUPPORT_ZLIB}
+    Procedure   CompressTo(Const Target:TBRBuffer);overload;
+    Procedure   DeCompressFrom(Const Source:TBRBuffer);overload;
+    function    CompressTo:TBRBuffer;overload;
+    function    DecompressTo:TBRBuffer;overload;
+    Procedure   Compress;
+    Procedure   Decompress;
+    {$ENDIF}
 
     (* release the current content of the buffer *)
     Procedure   Release;
@@ -362,6 +561,7 @@
     FOffset:    Int64;
     Function    DoReadAnsiString:AnsiString;
     Function    DoReadWideString:WideString;
+    function    doReadString:String;
   protected
     Procedure   Advance(Const Value:Integer);
   Public
@@ -435,7 +635,7 @@
     procedure   WriteDouble(Const Value:Double);
     Procedure   WriteSingle(Const Value:Single);
     procedure   WriteDateTime(Const Value:TDateTime);
-    Procedure   WriteString(Const Value:AnsiString);
+    Procedure   WriteString(Const Value:String);
     Procedure   WriteWideString(Const Value:WideString);
     Procedure   WriteAsc(Value:AnsiString;
                 Const Delimiter:AnsiString=CNT_BR_CRLF);
@@ -789,10 +989,28 @@ implementation
   {$IFDEF BR_SUPPORT_INTERNET}
   {$IFDEF MSWINDOWS}
   uses wintypes, comObj, ActiveX, UrlMon;
+  {$ELSE}
+  uses 'Include your networking library unit here';
   {$ENDIF}
   {$ENDIF}
 
   const
+
+  //###########################################################################
+  // Persistancy errors
+  //###########################################################################
+
+  ERR_BR_PERSISTENCY_ASSIGNCONFLICT
+  = '%s can not be assigned to %s ';
+
+  ERR_BR_PERSISTENCY_INVALIDSIGNATURE
+  = 'Invalid signature, found %s, expected %s';
+
+  ERR_BR_PERSISTENCY_INVALIDREADER
+  = 'Invalid reader object error';
+
+  ERR_BR_PERSISTENCY_INVALIDWRITER
+  = 'Invalid writer object error';
 
   //###########################################################################
   // Record management errors
@@ -1025,7 +1243,7 @@ Begin
   Value:=FClass.Create;
 end;
 
-  Function JL_RightStr(Const Value:String;Count:Integer):String;
+  { Function JL_RightStr(Const Value:String;Count:Integer):String;
   var
     FLen: Integer;
   Begin
@@ -1037,8 +1255,7 @@ end;
       Result:=Copy(Value,(FLen-Count)+1,Count);
     end else
     result:='';
-  end;
-
+  end;           }
 
   Procedure JL_FillWord(dstAddr:PWord;Const inCount:Integer;Const Value:Word);
   var
@@ -1519,7 +1736,7 @@ end;
 
     If FDataPTR<>NIL then
     Begin
-      mNewSize:=math.EnsureRange(FDataLEN - Value,0,FDataLen);
+      mNewSize:=EnsureRange(FDataLEN - Value,0,FDataLen);
       If mNewSize>0 then
       Begin
         if mNewSize<>FDataLen then
@@ -2177,7 +2394,7 @@ end;
     {$ENDIF}
     While FillLength>0 do
     Begin
-      mToWrite:=math.EnsureRange(Datalen,1,FillLength);
+      mToWrite:=EnsureRange(Datalen,1,FillLength);
       DoWriteData(Start,Data,mToWrite);
       FillLength:=FillLength - mToWrite;
       Start:=Start + mToWrite;
@@ -2335,7 +2552,7 @@ end;
             mTotal:=aBuffer.Size;
 
             Repeat
-              mBytesToRead:=Math.EnsureRange(SizeOf(mCache),0,mTotal);
+              mBytesToRead:=EnsureRange(SizeOf(mCache),0,mTotal);
               mRead:=aBuffer.Read(mOffset,mBytesToRead,mCache);
               If mRead>0 then
               Begin
@@ -2384,7 +2601,7 @@ end;
           Begin
 
             Repeat
-              mBytesToRead:=Math.EnsureRange(SizeOf(mCache),0,mTotal);
+              mBytesToRead:=EnsureRange(SizeOf(mCache),0,mTotal);
               mRead:=aStream.Read(mCache,mBytesToRead);
               If mRead>0 then
               Begin
@@ -2744,7 +2961,7 @@ end;
                   While mBytesToPush>0 do
                   Begin
                     (* calculate how much data to read *)
-                    mBytesToRead:=Math.EnsureRange
+                    mBytesToRead:=EnsureRange
                     (SizeOf(mCache),0,mBytesToPush);
 
                     (* calculate read & write positions *)
@@ -2845,7 +3062,7 @@ end;
                   While mToPoll>0 do
                   Begin
                     mPosition:=mBottom;
-                    mToRead:=Math.EnsureRange(SizeOf(mCache),0,mToPoll);
+                    mToRead:=EnsureRange(SizeOf(mCache),0,mToPoll);
 
                     DoReadData(mPosition,mCache,mToRead);
                     DoWriteData(mTop,mCache,mToRead);
@@ -3226,6 +3443,314 @@ end;
     {$ENDIF}
   end;
 
+  {$IFDEF BR_SUPPORT_ZLIB}
+  function TBRBuffer.CompressTo:TBRBuffer;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    result:=TBRBufferMemory.Create;
+    self.CompressTo(result);
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['CompressTo',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  Procedure TBRBuffer.Compress;
+  var
+    mTemp:  TBRBuffer;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    mTemp:=CompressTo;
+    try
+      self.Release;
+      self.Append(mTemp);
+    finally
+      mTemp.Free;
+    end;
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['Compress',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  Procedure TBRBuffer.Decompress;
+  var
+    mTemp:  TBRBuffer;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    mTemp:=self.DecompressTo;
+    try
+      self.Release;
+      self.Append(mTemp);
+    finally
+      mTemp.Free;
+    end;
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['Decompress',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  function TBRBuffer.DecompressTo:TBRBuffer;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    result:=TBRBufferMemory.Create;
+    result.DeCompressFrom(self);
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['DecompressTo',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  Procedure TBRBuffer.DeCompressFrom(Const Source:TBRBuffer);
+  var
+    FZRec:      TZStreamRec;
+    FInput:     Packed array [word] of Byte;
+    FOutput:    Packed array [word] of Byte;
+    FReader:    TBRReaderBuffer;
+    FWriter:    TBRWriterBuffer;
+    FBytes:     Integer;
+
+    Procedure CCheck(Const Code:Integer);
+    begin
+      if Code<0 then
+      Begin
+        Case Code of
+        Z_STREAM_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib stream error #%d',[code]);
+        Z_DATA_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib data error #%d',[code]);
+        Z_BUF_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib buffer error #%d',[code]);
+        Z_VERSION_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib version conflict [#%d]',[code]);
+        else
+          Raise EBRBufferError.CreateFmt('Unspecified ZLib error #%d',[Code]);
+        end;
+      end;
+    end;
+
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+
+    (* Populate ZLIB header *)
+    Fillchar(FZRec,SizeOf(FZRec),0);
+    FZRec.zalloc:=zlibAllocMem;
+    FZRec.zfree:=zlibFreeMem;
+
+    FzRec.next_in:=Addr(FInput);
+    FzRec.next_out:=Addr(FOutput);
+
+    (* release current content if any *)
+    If not Empty then
+    Release;
+
+    (* initialize ZLIB compression *)
+    CCheck(inflateInit_(FZRec,zlib_version,sizeof(FZRec)));
+    try
+      FReader:=TBRReaderBuffer.Create(Source);
+      try
+        FWriter:=TBRWriterBuffer.Create(self);
+        try
+
+          (* Signal Uncompress Begins *)
+          if assigned(FZIEvents.OnComprBegins) then
+          FZIEvents.OnComprBegins(self,size);
+
+          Repeat
+            (* Get more input *)
+            If FzRec.avail_in=0 then
+            Begin
+              FzRec.avail_in:=FReader.Read(FInput,SizeOf(FInput));
+              If FzRec.avail_in>0 then
+              FzRec.next_in:=Addr(FInput) else
+              Break;
+            end;
+
+            (* decompress input *)
+            Repeat
+              FzRec.next_out:=Addr(FOutput);
+              FzRec.avail_out:=SizeOf(FOutput);
+              CCheck(inflate(FZRec,Z_NO_FLUSH));
+              FBytes:=SizeOf(FOutput) - FzRec.avail_out;
+              if FBytes>0 then
+              Begin
+                FWriter.Write(FOutput,FBytes);
+                FzRec.next_out:=Addr(FOutput);
+                FzRec.avail_out:=SizeOf(FOutput);
+              end;
+            Until FzRec.avail_in=0;
+
+            (* Signal Inflate progress *)
+            if assigned(FZIEvents.OnComprUpdate) then
+            FZIEvents.OnComprUpdate(self,FReader.Position,Size);
+          Until False;
+
+          (* Signal Compression Ends event *)
+          if assigned(FZIEvents.OnComprEnds) then
+          FZIEvents.OnComprEnds(self,FReader.Position,FWriter.Position);
+        finally
+          FWriter.free;
+        end;
+      finally
+        FReader.free;
+      end;
+    finally
+      (* end Zlib compression *)
+      inflateEnd(FZRec);
+    end;
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['DeCompressFrom',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
+  {$IFDEF BR_SUPPORT_ZLIB}
+  Procedure TBRBuffer.CompressTo(Const Target:TBRBuffer);
+  var
+    FZRec:      TZStreamRec;
+    FInput:     Packed array [Word] of Byte;
+    FOutput:    Packed array [Word] of Byte;
+    FReader:    TBRReaderBuffer;
+    FWriter:    TBRWriterBuffer;
+    FMode:      Integer;
+    FBytes:     Integer;
+
+    Procedure CCheck(Const Code:Integer);
+    begin
+      if Code<0 then
+      Begin
+        Case Code of
+        Z_STREAM_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib stream error #%d',[code]);
+        Z_DATA_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib data error #%d',[code]);
+        Z_BUF_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib buffer error #%d',[code]);
+        Z_VERSION_ERROR:
+          Raise EBRBufferError.CreateFmt('ZLib version conflict [#%d]',[code]);
+        else
+          Raise EBRBufferError.CreateFmt('Unspecified ZLib error #%d',[Code]);
+        end;
+      end;
+    end;
+
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    (* Populate ZLIB header *)
+    Fillchar(FZRec,SizeOf(FZRec),0);
+    FZRec.zalloc:=zlibAllocMem;
+    FZRec.zfree:=zlibFreeMem;
+    FzRec.next_in:=Addr(FInput);
+    FZRec.next_out := Addr(FOutput);
+    FZRec.avail_out := sizeof(FOutput);
+
+    (* initialize ZLIB compression *)
+    CCheck(deflateInit_(FZRec,Z_BEST_COMPRESSION,
+    zlib_version,sizeof(FZRec)));
+
+    try
+      FReader:=TBRReaderBuffer.Create(self);
+      try
+        FWriter:=TBRWriterBuffer.Create(target);
+        try
+
+          FMode:=Z_NO_Flush;
+
+          (* Signal Compression Begins *)
+          if assigned(FZDEvents.OnComprBegins) then
+          FZDEvents.OnComprBegins(self,Size);
+
+          Repeat
+            (* more data required? If not, finish *)
+            If FzRec.avail_in=0 then
+            Begin
+              If FReader.Position<Size then
+              Begin
+                FzRec.avail_in:=FReader.Read(FInput,SizeOf(FInput));
+                FzRec.next_in:=@FInput
+              end else
+              FMode:=Z_Finish;
+            end;
+
+            (* Continue compression operation *)
+            CCheck(deflate(FZRec,FMode));
+
+            (* Write compressed data if any.. *)
+            FBytes:=SizeOf(FOutput) - FzRec.avail_out;
+            if FBytes>0 then
+            Begin
+              FWriter.Write(FOutput,FBytes);
+              FzRec.next_out:=@FOutput;
+              FzRec.avail_out:=SizeOf(FOutput);
+            end;
+
+            (* Signal Compression Progress Event *)
+            if assigned(FZDEvents.OnComprUpdate) then
+            FZDEvents.OnComprUpdate(self,FReader.Position,Size);
+
+          Until (FBytes=0) and (FMode=Z_Finish);
+
+          (* Signal Compression Ends event *)
+          if assigned(FZDEvents.OnComprEnds) then
+          FZDEvents.OnComprEnds(self,FReader.Position,Size);
+
+        finally
+          FWriter.free;
+        end;
+      finally
+        FReader.free;
+      end;
+    finally
+      (* end Zlib compression *)
+      deflateEnd(FZRec);
+    end;
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['CompressTo',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+  {$ENDIF}
+
   (*  Method:   ExportTo()
       Purpose:  The ExportTo method allows you to read from the buffer,
                 but output the data to an alternative target. In this case
@@ -3258,7 +3783,7 @@ end;
           While aLength>0 do
           Begin
             (* Clip prefetch to actual length *)
-            mToRead:=Math.EnsureRange(SizeOf(mCache),0,aLength);
+            mToRead:=EnsureRange(SizeOf(mCache),0,aLength);
 
             (* read from our buffer *)
             mRead:=Read(aByteIndex,mToRead,mCache);
@@ -3380,7 +3905,7 @@ end;
         While aLength>0 do
         Begin
           (* Clip prefetch to make sure we dont read to much *)
-          mToRead:=Math.EnsureRange(SizeOf(mCache),0,aLength);
+          mToRead:=EnsureRange(SizeOf(mCache),0,aLength);
 
           (* Anything to read after clipping? *)
           if mToRead>0 then
@@ -3458,7 +3983,7 @@ end;
                  Otherwise just clip the data to the current buffer size *)
               If (mcScale in FCaps) then
               DoGrowDataBy(mExtra) else
-              aLength:=math.EnsureRange(aLength - mExtra,0,MAXINT);
+              aLength:=EnsureRange(aLength - mExtra,0,MAXINT);
             end;
 
             (* Anything to work with? *)
@@ -3588,17 +4113,17 @@ end;
     soBeginning:
       Begin
         if Offset>=0 then
-        FOffset:=Math.EnsureRange(Offset,0,FBufObj.Size);
+        FOffset:=EnsureRange(Offset,0,FBufObj.Size);
       end;
     soCurrent:
       Begin
-        FOffset:=math.EnsureRange(FOffset + Offset,0,FBufObj.Size);
+        FOffset:=EnsureRange(FOffset + Offset,0,FBufObj.Size);
       end;
     soEnd:
       Begin
         If Offset>0 then
         FOffset:=FBufObj.Size-1 else
-        FOffset:=math.EnsureRange(FOffset-(abs(Offset)),0,FBufObj.Size);
+        FOffset:=EnsureRange(FOffset-(abs(Offset)),0,FBufObj.Size);
       end;
     end;
     result:=FOffset;
@@ -3685,7 +4210,7 @@ end;
     end else
     result:=0;
   end;
-
+     //4 +4 + 2 + 4 + 30
   //##########################################################################
   // TBRReaderBuffer
   //##########################################################################
@@ -3821,7 +4346,7 @@ end;
       Result:=0;
       While CopyLen>0 do
       Begin
-        FBytesToRead:=Math.EnsureRange(SizeOf(FCache),0,CopyLen);
+        FBytesToRead:=EnsureRange(SizeOf(FCache),0,CopyLen);
         FRead:=Read(FCache,FBytesToRead);
         If FRead>0 then
         Begin
@@ -3904,7 +4429,7 @@ end;
       try
         While Length>0 do
         Begin
-          FToRead:=Math.EnsureRange(SizeOf(FCache),0,Length);
+          FToRead:=EnsureRange(SizeOf(FCache),0,Length);
           FRead:=Read(FCache,FToRead);
           If FRead>0 then
           Begin
@@ -3959,6 +4484,21 @@ end;
 
   Function  TBRReader.ReadAsc(Const Terminator:AnsiString
             =CNT_BR_CRLF):AnsiString;
+
+    Function JL_RightStr(Const Value:AnsiString;Count:Integer):AnsiString;
+    var
+      FLen: Integer;
+    Begin
+      FLen:=Length(Value);
+      If (FLen>0) and (Count>0) then
+      Begin
+        If Count>FLen then
+        Count:=FLen;
+        Result:=Copy(Value,(FLen-Count)+1,Count);
+      end else
+      result:='';
+    end;
+
   var
     FCurrent: AnsiChar;
     FLen:     Integer;
@@ -4023,6 +4563,24 @@ end;
     result:='';
   end;
 
+  Function TBRReader.DoReadString:String;
+  var
+    FRead:  Integer;
+    FBytes: Integer;
+    FLen:   Integer;
+  Begin
+    FLen:=ReadInt;
+    If FLen>0 then
+    Begin
+      FBytes:=FLen * SizeOf(Char);
+      SetLength(Result,FLen);
+      FRead:=Read(Result[1],FBytes);
+      If FRead<FBytes then
+      Raise EBRReader.Create(ERR_BR_READER_FAILEDREAD);
+    end else
+    result:='';
+  end;
+
   Function TBRReader.ReadString:String;
   var
     FHead: Word;
@@ -4032,7 +4590,8 @@ end;
 
     (* Support both ansi and widestring *)
     Case FHead of
-    CNT_BR_ASTRING_HEADER: Result:=String(DoReadAnsiString);
+    CNT_BR_ASTRING_HEADER: Result:=String(doReadAnsiString);
+    CNT_BR_USTRING_HEADER: Result:=DoReadString;
     CNT_BR_WSTRING_HEADER: Result:=DoReadWideString;
     else
       Raise EBRReader.CreateFmt
@@ -4132,7 +4691,7 @@ end;
       FTotal:=ReadInt64;
       While FTotal>0 do
       Begin
-        FToRead:=math.EnsureRange(SizeOf(FCache),0,FTotal);
+        FToRead:=EnsureRange(SizeOf(FCache),0,FTotal);
         FRead:=Read(FCache,FToRead);
         If FRead>0 then
         Begin
@@ -4162,7 +4721,7 @@ end;
       FTotal:=ReadInt64;
       While FTotal>0 do
       Begin
-        FToRead:=math.EnsureRange(SizeOf(FCache),0,FTotal);
+        FToRead:=EnsureRange(SizeOf(FCache),0,FTotal);
         FRead:=Read(FCache,FToRead);
         If FRead>0 then
         Begin
@@ -4230,7 +4789,7 @@ end;
         varDouble:    WriteDouble(FAddr^.VDouble);
         varCurrency:  WriteCurrency(FAddr^.VCurrency);
         varDate:      WriteDateTime(FAddr^.VDate);
-        varString:    WriteString(AnsiString(FAddr^.VString));
+        varString:    WriteString(String(FAddr^.VString));
         varOleStr:    WriteWideString(WideString(FAddr^.VString));
         end;
       end;
@@ -4486,7 +5045,7 @@ end;
         {FBytesToRead:=Sizeof(FCache);
         If FBytesToRead>DataLen then
         FBytesToRead:=DataLen; }
-        FBytesToRead:=Math.EnsureRange(SizeOf(FCache),0,DataLen);
+        FBytesToRead:=EnsureRange(SizeOf(FCache),0,DataLen);
 
         FRead:=Reader.Read(FCache,FBytesToRead);
         If FRead>0 then
@@ -4579,12 +5138,12 @@ end;
     Write(Value[1],FLen);
   end;
 
-  Procedure TBRWriter.WriteString(Const Value:AnsiString);
+  Procedure TBRWriter.WriteString(Const Value:String);
   var
     FLen: Integer;
   Begin
     (* write string header *)
-    WriteWord(CNT_BR_ASTRING_HEADER);
+    WriteWord(CNT_BR_USTRING_HEADER);
 
     (* get length of data *)
     FLen:=Length(Value);
@@ -4595,7 +5154,7 @@ end;
     (* Any the actual data *)
     {$WARNINGS OFF}
     If FLen>0 then
-    If Write(Value[1],FLen)<FLen then
+    If Write(Value[1],FLen * SizeOf(Char))<FLen then
     Raise EBRWriter.Create(ERR_BR_WRITER_FAILEDWRITE);
     {$WARNINGS ON}
   end;
@@ -4733,7 +5292,7 @@ begin
   FBuffer:=aBuffer else
   raise Exception.Create(CNT_PARTACCESS_BUFFERISNIL);
 
-  FheadSize:=math.EnsureRange(aReservedHeaderSize,0,MaxInt);
+  FheadSize:=EnsureRange(aReservedHeaderSize,0,MaxInt);
 
   if aPartSize>0 then
   FPartSize:=aPartSize else
@@ -4819,7 +5378,7 @@ Begin
   if (mcWrite in FBuffer.Capabilities)
   and (mcScale in FBuffer.Capabilities) then
   Begin
-    aLength:=math.EnsureRange(aLength,0,FPartSize);
+    aLength:=EnsureRange(aLength,0,FPartSize);
     if aLength>0 then
     Begin
       mData:=AllocMem(FPartSize);
@@ -4843,7 +5402,7 @@ Begin
   if (mcWrite in FBuffer.Capabilities)
   and (mcScale in FBuffer.Capabilities) then
   Begin
-    mLength:=math.EnsureRange(aData.Size,0,FPartSize);
+    mLength:=EnsureRange(aData.Size,0,FPartSize);
     if mLength>0 then
     Begin
       mData:=AllocMem(FPartSize);
@@ -4892,7 +5451,7 @@ begin
       Begin
         mOffset:=getOffsetForPart(aIndex);
 
-        mToRead:=Math.EnsureRange(aData.Size,1,FPartSize);
+        mToRead:=EnsureRange(aData.Size,1,FPartSize);
 
         mData:=AllocMem(mToRead);
         try
@@ -5649,7 +6208,7 @@ Begin
   If  FExplicit
   and (Value<>FLength) then
   Begin
-    Value:=math.EnsureRange(Value,0,MAXINT-1);
+    Value:=EnsureRange(Value,0,MAXINT-1);
     If Value>0 then
     Begin
       FLength:=Value;
@@ -5766,6 +6325,411 @@ Begin
   inherited;
   SignalRelease;
 end;
+
+
+  //##########################################################################
+  // TBRPersistent
+  //##########################################################################
+
+  Constructor TBRPersistent.Create;
+  Begin
+    inherited;
+    FObjId:=ClassIdentifier;
+  end;
+
+  procedure TBRPersistent.DefineProperties(Filer: TFiler);
+  begin
+    inherited;
+    filer.DefineBinaryProperty('$RES',ReadObjBin,WriteObjBin,true);
+  end;
+
+  procedure TBRPersistent.ReadObjBin(Stream: TStream);
+  var
+    mReader:  TBRReaderStream;
+  Begin
+    mReader:=TBRReaderStream.Create(Stream);
+    try
+      ObjectFrom(mReader);
+    finally
+      mReader.Free;
+    end;
+  end;
+
+  procedure TBRPersistent.WriteObjBin(Stream: TStream);
+  var
+    mWriter:  TBRWriterStream;
+  begin
+    mWriter:=TBRWriterStream.Create(Stream);
+    try
+      ObjectTo(mWriter);
+    finally
+      mWriter.Free;
+    end;
+  end;
+
+  Function TBRPersistent.ObjectIdentifier:Longword;
+  Begin
+    result:=FObjId;
+  end;
+
+  Class Function TBRPersistent.ClassIdentifier:Longword;
+  var
+    mData:  String;
+  Begin
+    mData:=ObjectPath;
+    result:=BobJenkinsHash(mData[1],length(mData) * SizeOf(Char),$BABE);
+  end;
+
+  (* ISRLPersistent: ObjectToStream *)
+  Procedure TBRPersistent.ObjectToStream(Const Stream:TStream);
+  var
+    FWriter: TBRWriterStream;
+  Begin
+    FWriter:=TBRWriterStream.Create(Stream);
+    try
+      ObjectTo(FWriter);
+    finally
+      FWriter.free;
+    end;
+  end;
+
+  (* ISRLPersistent: ObjectToBinary *)
+  Procedure TBRPersistent.ObjectToData(Const Binary:TBRBuffer);
+  var
+    FWriter: TBRWriterBuffer;
+  Begin
+    FWriter:=TBRWriterBuffer.Create(Binary);
+    try
+      ObjectTo(FWriter);
+    finally
+      FWriter.free;
+    end;
+  end;
+
+  (* ISRLPersistent: ObjectToBinary *)
+  Function TBRPersistent.ObjectToData:TBRBuffer;
+  Begin
+    Result:=TBRBufferMemory.Create;
+    try
+      ObjectToData(Result);
+    except
+      on e: exception do
+      Begin
+        FreeAndNil(Result);
+        Raise EBRPersistent.Create(e.Message);
+      end;
+    end;
+  end;
+
+  (* ISRLPersistent: ObjectToStream *)
+  Function TBRPersistent.ObjectToStream:TStream;
+  Begin
+    Result:=TMemoryStream.Create;
+    try
+      ObjectToStream(Result);
+      Result.Position:=0;
+    except
+      on e: exception do
+      Begin
+        FreeAndNil(Result);
+        Raise EBRPersistent.Create(e.message);
+      end;
+    end;
+  end;
+
+  Procedure TBRPersistent.ObjectFrom(Const Reader:TBRReader);
+  Begin
+    If Reader<>NIL then
+    Begin
+      If BeginUpdate then
+      Begin
+        BeforeReadObject;
+        ReadObject(Reader);
+        AfterReadObject;
+        EndUpdate;
+      end;
+    end else
+    Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDREADER);
+  end;
+
+  Procedure TBRPersistent.ObjectTo(Const Writer:TBRWriter);
+  Begin
+    If Writer<>NIl then
+    Begin
+      BeforeWriteObject;
+      WriteObject(Writer);
+      AfterWriteObject;
+    end else
+    Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDWRITER);
+  end;
+
+  (* ISRLPersistent: ObjectFromBinary *)
+  Procedure TBRPersistent.ObjectFromData
+            (Const Binary:TBRBuffer;Const Disposable:Boolean);
+  var
+    FReader: TBRReaderBuffer;
+  Begin
+    FReader:=TBRReaderBuffer.Create(Binary);
+    try
+      ObjectFrom(FReader);
+    finally
+      FReader.free;
+      If Disposable then
+      Binary.free;
+    end;
+  end;
+
+  procedure TBRPersistent.Assign(Source:TPersistent);
+  Begin
+    If Source<>NIL then
+    Begin
+      if (source is TBRPersistent) then
+      Begin
+        (* Always supports object of same class *)
+        if IBRObject(TBRPersistent(Source)).GetObjectClass=GetObjectClass then
+        Begin
+          If Source<>Self then
+          ObjectFromData(TBRPersistent(Source).ObjectToData,True);
+        end else
+        (* no support, raise exception *)
+        Raise EBRPersistent.CreateFmt
+        (ERR_BR_PERSISTENCY_ASSIGNCONFLICT,
+        [TBRPersistent(Source).ObjectPath,ObjectPath]);
+      end;
+    end;
+  end;
+
+  Procedure TBRPersistent.BeforeWriteObject;
+  Begin
+    AddObjectState([osReadWrite]);
+  end;
+
+  Procedure TBRPersistent.BeforeReadObject;
+  Begin
+    AddObjectState([osReadWrite]);
+  end;
+
+  Procedure TBRPersistent.AfterReadObject;
+  Begin
+    RemoveObjectState([osReadWrite]);
+  end;
+
+  procedure TBRPersistent.AfterWriteObject;
+  Begin
+    RemoveObjectState([osReadWrite]);
+  end;
+
+  Procedure TBRPersistent.WriteObject(Const Writer:TBRWriter);
+  Begin
+    (* write identifier to stream *)
+    Writer.WriteLong(FObjId);
+  end;
+
+  Procedure TBRPersistent.ReadObject(Const Reader:TBRReader);
+  var
+    FReadId:  Longword;
+  Begin
+    (* read identifier from stream *)
+    FReadId:=Reader.ReadLong;
+
+    If FReadId<>FObjId then
+    Raise EBRPersistent.CreateFmt
+    (ERR_BR_PERSISTENCY_INVALIDSIGNATURE,
+    [IntToHex(FReadId,8),IntToHex(FObjId,8)]);
+  end;
+
+  (* ISRLPersistent: ObjectFromStream *)
+  Procedure TBRPersistent.ObjectFromStream
+            (Const Stream:TStream;Const Disposable:Boolean);
+  var
+    FReader:  TBRReaderStream;
+  Begin
+    FReader:=TBRReaderStream.Create(Stream);
+    try
+      ObjectFrom(FReader);
+    finally
+      FReader.free;
+      If Disposable then
+      Stream.free;
+    end;
+  end;
+
+  (* ISRLPersistent: ObjectfromFile *)
+  Procedure TBRPersistent.ObjectfromFile(Const Filename:String);
+  Begin
+    ObjectFromStream(TFileStream.Create(filename,
+    fmOpenRead or fmShareDenyWrite),True);
+  end;
+
+  (* ISRLPersistent: ObjectToFile *)
+  Procedure TBRPersistent.ObjectToFile(Const Filename:String);
+  var
+    FFile:  TFileStream;
+  Begin
+    FFile:=TFileStream.Create(filename,fmCreate);
+    try
+      ObjectToStream(FFile);
+    finally
+      FFile.free;
+    end;
+  end;
+
+  Procedure TBRPersistent.BeforeUpdate;
+  Begin
+  end;
+
+  procedure TBRPersistent.AfterUpdate;
+  Begin
+  end;
+
+  Function TBRPersistent.BeginUpdate:Boolean;
+  Begin
+    result:=QueryObjectState([osDestroying])=False;
+    if result then
+    Begin
+      inc(FUpdCount);
+      If FUpdCount=1 then
+      Begin
+        AddObjectState([osUpdating]);
+        BeforeUpdate;
+      end;
+    end;
+  end;
+
+  procedure TBRPersistent.EndUpdate;
+  Begin
+    If QueryObjectState([osUpdating]) then
+    Begin
+      dec(FUpdCount);
+      If FUpdCount<1 then
+      Begin
+        RemoveObjectState([osUpdating]);
+        AfterUpdate;
+      end;
+    end;
+  end;
+
+  //##########################################################################
+  // TBRObject
+  //##########################################################################
+
+  Constructor TBRObject.Create;
+  Begin
+    inherited;
+    FState:=[osCreating];
+  end;
+
+  Procedure TBRObject.AfterConstruction;
+  Begin
+    inherited;
+    FState:=FState - [osCreating];
+  end;
+
+  Procedure TBRObject.BeforeDestruction;
+  Begin
+    FState:=FState + [osDestroying];
+    inherited;
+  end;
+
+  Function TBRObject.GetObjectClass:TBRObjectClass;
+  Begin
+    Result:=TBRObjectClass(ClassType);
+  end;
+
+  Class Function TBRObject.ObjectPath:String;
+  var
+    FAncestor:  TClass;
+  Begin
+    SetLength(result,0);
+    FAncestor:=ClassParent;
+    While FAncestor<>NIL do
+    Begin
+      If Length(Result)>0 then
+      Result:=(FAncestor.ClassName + '.' + Result) else
+      Result:=FAncestor.ClassName;
+      FAncestor:=FAncestor.ClassParent;
+    end;
+    If Length(Result)>0 then
+    result:=result + '.' + ClassName else
+    result:=ClassName;
+  end;
+
+  Function TBRObject.GetParent:TObject;
+  Begin
+    result:=FParent;
+  end;
+
+  Procedure TBRObject.SetParent(Const Value:TObject);
+  Begin
+    FParent:=Value;
+  end;
+
+  Function TBRObject.GetObjectState:TBRObjectState;
+  Begin
+    result:=FState;
+  end;
+
+  Procedure TBRObject.AddObjectState(Const Value:TBRObjectState);
+  Begin
+    FState:=FState + Value;
+  end;
+
+  Procedure TBRObject.RemoveObjectState(Const Value:TBRObjectState);
+  Begin
+    FState:=FState - Value;
+  end;
+
+  Procedure TBRObject.SetObjectState(Const Value:TBRObjectState);
+  Begin
+    FState:=Value;
+  end;
+
+  Function TBRObject.QueryObjectState(Const Value:TBRObjectState):Boolean;
+  Begin
+    If (osCreating in Value) then
+    Result:=(osCreating in FState) else
+    Result:=False;
+
+    If (Result=False) and (osDestroying in Value) then
+    Begin
+      If (osDestroying in FState) then
+      Result:=True;
+    end;
+
+    If (Result=False) and (osUpdating in Value) then
+    Begin
+      if (osUpdating in FState) then
+      Result:=True;
+    end;
+
+    If (Result=False) and (osReadWrite in Value) then
+    Begin
+      if (osReadWrite in FState) then
+      Result:=True;
+    end;
+
+    If (Result=False) and (osSilent in Value) then
+    Result:=(osSilent in FState);
+  end;
+
+  function TBRObject.QueryInterface(const IID:TGUID;out Obj):HResult;stdcall;
+  Begin
+    If GetInterface(IID,Obj) then
+    Result:=S_OK else
+    Result:=E_NOINTERFACE;
+  end;
+
+  function TBRObject._AddRef:Integer;stdcall;
+  Begin
+    (* Inform COM that no reference counting is required *)
+    Result:=-1;
+  end;
+
+  function TBRObject._Release:Integer;stdcall;
+  Begin
+    (* Inform COM that no reference counting is required *)
+    Result:=-1;
+  end;
 
 Initialization
 Begin
