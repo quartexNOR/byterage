@@ -68,6 +68,9 @@
                   - Added CompressTo / DecompressFrom methods
                   - Added Compress() and Decompress() method
                   - Added TBRObject and TBRPersistent
+  - [05.03.2014]  - TBRBuffer and TBRCustomRecord now inherits from
+                    TBRPersistent. All objects now supports IBRPersistent
+                    automatically.
 
   ########################################################################### *)
 
@@ -81,7 +84,6 @@
   uses
   System.Sysutils, System.classes,
   System.Math,
-  System.Generics.Defaults,
   System.Generics.Collections,
   {$IFDEF BR_SUPPORT_ZLIB}
   System.Zlib,
@@ -213,7 +215,6 @@
   TBRTripleByte = Packed record
     a,b,c:Byte;
   End;
-
 
   TBRObject = Class(TPersistent,IBROwnedObject,IBRObject)
   Strict private
@@ -794,6 +795,7 @@
     Procedure   SignalRead;
     procedure   SignalRelease;
   Public
+    property    Parent;
     function    asString:String;virtual;abstract;
     Property    DisplayName:String read GetDisplayName;
     Property    FieldSignature:Int64 read FNameHash;
@@ -973,12 +975,8 @@
 
     Procedure   Clear;virtual;
 
-    //procedure   Assign(source:TPersistent);override;
-    //function    toStream:TStream;virtual;
-    //function    toBuffer:TBRBuffer;virtual;
-
-    //Procedure   SaveToStream(Const stream:TStream);virtual;
-    //procedure   LoadFromStream(Const stream:TStream);virtual;
+    Procedure   RawExport(const data);virtual;
+    Procedure   RawImport(const data);virtual;
 
     Function    IndexOf(const aName:String):Integer;
     Function    ObjectOf(const aName:String):TBRRecordField;
@@ -5720,63 +5718,18 @@ Begin
   inherited;
 end;
 
-(* procedure TBRCustomRecord.Assign(source:TPersistent);
-var
-  mStream:  TStream;
-begin
-  if (source<>nil)
-  and (source is TBRCustomRecord) then
-  begin
-    mStream:=TBRCustomRecord(source).toStream;
-    try
-      LoadFromStream(mStream);
-    finally
-      mStream.Free;
-    end;
-  end else
-  inherited;
-end;  *)
-
 Procedure TBRCustomRecord.Clear;
 Begin
   FObjects.Clear;
 end;
 
-(* function TBRCustomRecord.toStream:TStream;
+Procedure TBRCustomRecord.RawExport(const data);
 Begin
-  result:=TMemoryStream.Create;
-  try
-    SaveToStream(result);
-    result.Position:=0;
-  except
-    on exception do
-    Begin
-      FreeAndNIL(result);
-      Raise;
-    end;
-  end;
-end; *)
+end;
 
-(* function TBRCustomRecord.toBuffer:TBRBuffer;
-var
-  mAdapter: TBRStreamAdapter;
+Procedure TBRCustomRecord.RawImport(const data);
 Begin
-  result:=TBRBufferMemory.Create;
-  try
-    mAdapter:=TBRStreamAdapter.Create(result);
-    try
-      SaveToStream(mAdapter);
-    finally
-      mAdapter.Free;
-    end;
-  except
-    on exception do
-    Begin
-      FreeAndNIL(result);
-      Raise;
-    end;
-  end;
-end; *)
+end;
 
 Procedure TBRCustomRecord.BeforeReadObject;
 begin
@@ -5813,66 +5766,12 @@ Begin
       if BRRecordInstanceFromName(mId,mField) then
       Begin
         FObjects.Add(mField);
+        IBROwnedObject(mField).SetParent(self);
         IBRPersistent(mField).ObjectFrom(Reader);
       end;
     end;
   end;
 end;
-
-(* Procedure TBRCustomRecord.SaveToStream(Const stream:TStream);
-var
-  x:  Integer;
-  mWriter:  TBRWriter;
-Begin
-  mWriter:=TBRWriterStream.Create(stream);
-  try
-    mWriter.WriteLong(CNT_RECORD_HEADER);
-    mWriter.WriteInt(FObjects.Count);
-    for x:=0 to FObjects.Count-1 do
-    Begin
-      mWriter.WriteString(items[x].ClassName);
-      IBRPersistent(items[x]).ObjectTo(mWriter);
-      //items[x].WriteObject(mWriter);
-    end;
-  finally
-    mWriter.Free;
-  end;
-end;
-
-procedure TBRCustomRecord.LoadFromStream(Const stream:TStream);
-var
-  x:  Integer;
-  mReader:  TBRReader;
-  mHead:  Longword;
-  mCount: Integer;
-  mName:  String;
-  mField: TBRRecordField;
-Begin
-  Clear;
-  mReader:=TBRReaderStream.Create(stream);
-  try
-    mHead:=mReader.ReadLong;
-    if mHead=CNT_RECORD_HEADER then
-    begin
-      mCount:=mReader.ReadInt;
-      for x:=0 to mCount-1 do
-      Begin
-        mName:=mReader.ReadString;
-        if BRRecordInstanceFromName(mName,mField) then
-        Begin
-          self.FObjects.Add(mField);
-          IBRPersistent(mField).ObjectFrom(mReader);
-          //mField.ReadObject(mReader);
-        end else
-        Raise EBRRecordError.CreateFmt
-        ('Unknown field class [%s] error',[mName]);
-      end;
-    end else
-    Raise EBRRecordError.Create('Invalid record header error');
-  finally
-    mReader.Free;
-  end;
-end;  *)
 
 Procedure TBRCustomRecord.WriteInt(const aName:String;const Value:Integer);
 var
@@ -6057,6 +5956,7 @@ Begin
       Result:=aFieldClass.Create;
       Result.FieldName:=aName;
       FObjects.Add(result);
+      IBROwnedObject(Result).SetParent(self);
     end else
     result:=NIL;
   end;
@@ -6660,7 +6560,7 @@ end;
     mData:  String;
   Begin
     mData:=ObjectPath;
-    result:=BobJenkinsHash(mData[1],length(mData) * SizeOf(Char),$BABE);
+    result:=TBRBuffer.ElfHash(mData[1],Length(mData) * SizeOf(Char));
   end;
 
   (* ISRLPersistent: ObjectToStream *)
