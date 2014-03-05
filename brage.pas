@@ -71,12 +71,13 @@
   - [05.03.2014]  - TBRBuffer and TBRCustomRecord now inherits from
                     TBRPersistent. All objects now supports IBRPersistent
                     automatically.
-
+                  - Moved GUID conversion into TBRFieldGUID as class functions
+                  - Removed older code no longer in use
   ########################################################################### *)
 
   {.$DEFINE BR_SUPPORT_INTERNET}
   {$DEFINE BR_SUPPORT_VARIANTS}
-  {.$DEFINE BR_DEBUG}
+  {$DEFINE BR_DEBUG}
   {$DEFINE BR_SUPPORT_ZLIB}
 
   interface
@@ -116,17 +117,18 @@
   type
 
   (* Custom exceptions *)
-  EBRBufferError      = Class(Exception);
+  EBRObject           = Class(Exception);
+  EBRPersistent       = Class(EBRObject);
+  EBRBufferError      = Class(EBRObject);
   EBRStreamAdapter    = Class(Exception);
   EBRReader           = Class(Exception);
   EBRWriter           = Class(Exception);
-  EBRRecordFieldError = Class(Exception);
-  EBRRecordError      = Class(Exception);
-
-  EBRObject           = Class(Exception);
-  EBRPersistent       = Class(EBRObject);
+  EBRRecordFieldError = Class(EBRObject);
+  EBRRecordError      = Class(EBRPersistent);
 
   (* Forward declarations *)
+  TBRObject           = Class;
+  TBRPersistent       = Class;
   TBRBuffer           = Class;
   TBRReader           = Class;
   TBRWriter           = class;
@@ -137,13 +139,9 @@
   TBRPartsAccess      = Class;
   TBRRecordField      = Class;
 
-  TBRObject           = Class;
-  TBRPersistent       = Class;
-
   TBRObjectClass      = class of TBRObject;
-
-  TBRRecordFieldClass = Class of TBRRecordField;
-  TBRRecordFieldArray = Array of TBRRecordFieldClass;
+  TBRRecordFieldClass = class of TBRRecordField;
+  TBRRecordFieldArray = array of TBRRecordFieldClass;
 
   TBRObjectState      = set of (
                         osCreating,
@@ -296,8 +294,6 @@
     Constructor Create;override;
   End;
 
-
-
   (* This class allows you to access a buffer regardless of how its
      implemented, through a normal stream. This makes it very easy to
      use buffers with standard VCL components and classes *)
@@ -342,30 +338,18 @@
 
     Procedure   SetSize(Const aNewSize:Int64);
   Protected
-    (*  Standard persistence. Please note that we call the function
-        ObjectHasData() to determine if there is anything to save.
-        See extended persistence below for more information.
+    (*  Extended persistence:
+        TBRPersistent now handles load and saving of object data.
+        It wraps the normal VCL persistence system and uses its own,
+        more "clear cut" methods to unify loading and saving
+        of object data.
 
-        NOTE: Do not override these methods, use the functions defined
-              in extended persistance when modifying this object *)
-    //Procedure   ReadObjBin(Stream:TStream);
-    //procedure   WriteObjBin(Stream:TStream);
-    //procedure   DefineProperties(Filer: TFiler);override;
+        In short, simply override ReadObject, WriteObject and
+        ObjectHasData to handle persistence. Everything else
+        is taken care of by the object itself.
+    *)
     Function    ObjectHasData:Boolean;override;
-  Protected
-    (*  Extended persistence.
-        The function ObjectHasData() is called by the normal VCL
-        DefineProperties to determine if there is any data to save.
-        The other methods are invoked before and after either loading or
-        saving object data.
-
-        NOTE: To extend the functionality of this object please override
-        ReadObject() and WriteObject(). The object will take care of
-        everything else. *)
     Procedure   BeforeReadObject;override;
-    (* Procedure   AfterReadObject;override;
-    Procedure   BeforeWriteObject;override;
-    Procedure   AfterWriteObject;override; *)
     Procedure   ReadObject(Const Reader:TBRReader);override;
     Procedure   WriteObject(Const Writer:TBRWriter);override;
   Protected
@@ -439,7 +423,7 @@
         data already present forward *)
     Function    Push(Const aSource;aLength:Integer):Integer;
 
-    (* Poll data out of buffer, again starting at the beginning of the buffer.
+    (* Poll data out of buffer, starting at the beginning of the buffer.
        The polled data is removed from the buffer *)
     Function    Poll(Var aTarget;aLength:Integer):Integer;
 
@@ -484,7 +468,7 @@
     Procedure   BeforeDestruction;Override;
 
     (* Generic ELF-HASH methods *)
-    Class function ElfHash(const aData;aLength:Integer):LongWord;overload;
+    class function ElfHash(const aData;aLength:Integer):LongWord;overload;
     class function ElfHash(aText:String):LongWord;overload;
 
     (* Generic memory fill methods *)
@@ -560,7 +544,7 @@
     Procedure   Close;virtual;
   Public
     Procedure   BeforeDestruction;Override;
-    Constructor Create(aFilename:String;StreamFlags:Word);overload;virtual;
+    Constructor Create(aFilename:String;StreamFlags:Word);Reintroduce;virtual;
   End;
 
   (* Abstract reader class *)
@@ -873,6 +857,9 @@
   Public
     Property    Value:TGUID read GetValue write SetValue;
     Function    asString:String;override;
+
+    class function BRStrToGUID(const Value:AnsiString):TGUID;
+    class Function BRGUIDToStr(const GUID:TGUID):AnsiString;
   End;
 
   TBRFieldInteger = Class(TBRRecordField)
@@ -903,7 +890,7 @@
     FExplicit:  Boolean;
     Function    GetValue:String;
     Procedure   SetValue(NewValue:String);
-    Procedure   SetFieldLength(Value:Integer);
+    Procedure   SetFieldLength(aValue:Integer);
   Protected
     Function    GetDisplayName:String;Override;
   Public
@@ -980,7 +967,7 @@
 
     Function    IndexOf(const aName:String):Integer;
     Function    ObjectOf(const aName:String):TBRRecordField;
-    Constructor Create;virtual;
+    Constructor Create;override;
     Destructor  Destroy;Override;
   End;
 
@@ -1001,11 +988,6 @@ Function  BRRecordFieldClassFromName(aName:String;
 
 Function  BRRecordInstanceFromName(aName:String;
           out Value:TBRRecordField):Boolean;
-
-
-function BRStrToGUID(const Value:AnsiString):TGUID;
-Function BRGUIDToStr(const GUID:TGUID):AnsiString;
-
 
 
 implementation
@@ -1123,83 +1105,6 @@ Var
 _FieldClasses:  TBRRecordFieldArray;
 
 
-Function BRGUIDToStr(const GUID:TGUID):AnsiString;
-begin
-  SetLength(Result, 38);
-  StrLFmt(@Result[1],38,'{%.8x-%.4x-%.4x-%.2x%.2x-%.2x%.2x%.2x%.2x%.2x%.2x}',
-  [GUID.D1, GUID.D2, GUID.D3, GUID.D4[0], GUID.D4[1], GUID.D4[2], GUID.D4[3],
-  GUID.D4[4], GUID.D4[5], GUID.D4[6], GUID.D4[7]]);
-end;
-
-function BRStrToGUID(const Value:AnsiString):TGUID;
-const
-  ERR_InvalidGUID = '[%s] is not a valid GUID value';
-var
-  i:  Integer;
-  src, dest: PAnsiChar;
-
-  function _HexChar(Const C: AnsiChar): Byte;
-  begin
-    case C of
-      '0'..'9': Result := Byte(c) - Byte('0');
-      'a'..'f': Result := (Byte(c) - Byte('a')) + 10;
-      'A'..'F': Result := (Byte(c) - Byte('A')) + 10;
-    else        Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
-    end;
-  end;
-
-  function _HexByte(Const P:PAnsiChar): AnsiChar;
-  begin
-    Result:=AnsiChar((_HexChar(p[0]) shl 4)+_HexChar(p[1]));
-  end;
-
-begin
-  If Length(Value)=38 then
-  Begin
-    dest := @Result;
-    src := PAnsiChar(Value);
-    Inc(src);
-
-    for i := 0 to 3 do
-    dest[i] := _HexByte(src+(3-i)*2);
-
-    Inc(src, 8);
-    Inc(dest, 4);
-    if src[0] <> '-' then
-    Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
-
-    Inc(src);
-    for i := 0 to 1 do
-    begin
-      dest^ := _HexByte(src+2);
-      Inc(dest);
-      dest^ := _HexByte(src);
-      Inc(dest);
-      Inc(src, 4);
-      if src[0] <> '-' then
-      Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
-      inc(src);
-    end;
-
-    dest^ := _HexByte(src);
-    Inc(dest);
-    Inc(src, 2);
-    dest^ := _HexByte(src);
-    Inc(dest);
-    Inc(src, 2);
-    if src[0] <> '-' then
-    Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
-
-    Inc(src);
-    for i := 0 to 5 do
-    begin
-      dest^:=_HexByte(src);
-      Inc(dest);
-      Inc(src, 2);
-    end;
-  end else
-  Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
-end;
 
 Procedure BRRegisterRecordField(AClass:TBRRecordFieldClass);
 var
@@ -4202,7 +4107,7 @@ end;
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
-      Raise EBRBufferError.CreateFmt
+      Raise EBRStreamAdapter.CreateFmt
       (CNT_ERR_BTRG_BASE,['GetSize',e.classname,e.message]);
     end;
     {$ENDIF}
@@ -4217,7 +4122,7 @@ end;
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
-      Raise EBRBufferError.CreateFmt
+      Raise EBRStreamAdapter.CreateFmt
       (CNT_ERR_BTRG_BASE,['SetSize',e.classname,e.message]);
     end;
     {$ENDIF}
@@ -4233,7 +4138,7 @@ end;
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
-      Raise EBRBufferError.CreateFmt
+      Raise EBRStreamAdapter.CreateFmt
       (CNT_ERR_BTRG_BASE,['Read',e.classname,e.message]);
     end;
     {$ENDIF}
@@ -4254,7 +4159,7 @@ end;
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
-      Raise EBRBufferError.CreateFmt
+      Raise EBRStreamAdapter.CreateFmt
       (CNT_ERR_BTRG_BASE,['Write',e.classname,e.message]);
     end;
     {$ENDIF}
@@ -4287,7 +4192,7 @@ end;
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
-      Raise EBRBufferError.CreateFmt
+      Raise EBRStreamAdapter.CreateFmt
       (CNT_ERR_BTRG_BASE,['Seek',e.classname,e.message]);
     end;
     {$ENDIF}
@@ -4367,7 +4272,7 @@ end;
     end else
     result:=0;
   end;
-     //4 +4 + 2 + 4 + 30
+
   //##########################################################################
   // TBRReaderBuffer
   //##########################################################################
@@ -4389,7 +4294,6 @@ end;
     end else
     result:=0;
   end;
-
 
   //##########################################################################
   // TBRReader
@@ -6171,6 +6075,85 @@ Begin
   SignalWrite;
 end;
 
+
+Class function TBRFieldGUID.BRGUIDToStr(const GUID:TGUID):AnsiString;
+begin
+  SetLength(Result, 38);
+  StrLFmt(@Result[1],38,'{%.8x-%.4x-%.4x-%.2x%.2x-%.2x%.2x%.2x%.2x%.2x%.2x}',
+  [GUID.D1, GUID.D2, GUID.D3, GUID.D4[0], GUID.D4[1], GUID.D4[2], GUID.D4[3],
+  GUID.D4[4], GUID.D4[5], GUID.D4[6], GUID.D4[7]]);
+end;
+
+class function TBRFieldGUID.BRStrToGUID(const Value:AnsiString):TGUID;
+const
+  ERR_InvalidGUID = '[%s] is not a valid GUID value';
+var
+  i:  Integer;
+  src, dest: PAnsiChar;
+
+  function _HexChar(Const C: AnsiChar): Byte;
+  begin
+    case C of
+      '0'..'9': Result := Byte(c) - Byte('0');
+      'a'..'f': Result := (Byte(c) - Byte('a')) + 10;
+      'A'..'F': Result := (Byte(c) - Byte('A')) + 10;
+    else        Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
+    end;
+  end;
+
+  function _HexByte(Const P:PAnsiChar): AnsiChar;
+  begin
+    Result:=AnsiChar((_HexChar(p[0]) shl 4)+_HexChar(p[1]));
+  end;
+
+begin
+  If Length(Value)=38 then
+  Begin
+    dest := @Result;
+    src := PAnsiChar(Value);
+    Inc(src);
+
+    for i := 0 to 3 do
+    dest[i] := _HexByte(src+(3-i)*2);
+
+    Inc(src, 8);
+    Inc(dest, 4);
+    if src[0] <> '-' then
+    Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
+
+    Inc(src);
+    for i := 0 to 1 do
+    begin
+      dest^ := _HexByte(src+2);
+      Inc(dest);
+      dest^ := _HexByte(src);
+      Inc(dest);
+      Inc(src, 4);
+      if src[0] <> '-' then
+      Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
+      inc(src);
+    end;
+
+    dest^ := _HexByte(src);
+    Inc(dest);
+    Inc(src, 2);
+    dest^ := _HexByte(src);
+    Inc(dest);
+    Inc(src, 2);
+    if src[0] <> '-' then
+    Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
+
+    Inc(src);
+    for i := 0 to 5 do
+    begin
+      dest^:=_HexByte(src);
+      Inc(dest);
+      Inc(src, 2);
+    end;
+  end else
+  Raise Exception.CreateFmt(ERR_InvalidGUID,[Value]);
+end;
+
 //##########################################################################
 // TBRFieldDateTime
 //##########################################################################
@@ -6381,15 +6364,15 @@ Begin
   Result:='String';
 end;
 
-Procedure TBRFieldString.SetFieldLength(Value:Integer);
+Procedure TBRFieldString.SetFieldLength(aValue:Integer);
 Begin
   If  FExplicit
-  and (Value<>FLength) then
+  and (aValue<>FLength) then
   Begin
-    Value:=EnsureRange(Value,0,MAXINT-1);
-    If Value>0 then
+    aValue:=EnsureRange(aValue,0,MAXINT-1);
+    If aValue>0 then
     Begin
-      FLength:=Value;
+      FLength:=aValue;
       If FLength<>Size then
       Size:=FLength;
     end else
@@ -6404,8 +6387,8 @@ Function TBRFieldString.GetValue:String;
 Begin
   If not Empty then
   Begin
-    SetLength(Result,Size);
-    If Read(0,Size,pointer(@Result[1])^)<Size then
+    SetLength(Result,Size div SizeOf(Char) );
+    If Read(0,Size,Result[1])<Size then //pointer(@Result[1])^)<Size then
     Raise EBRRecordFieldError.CreateFmt
     (ERR_RECORDFIELD_FailedGet,[FieldName]) else
     SignalRead;
@@ -6556,11 +6539,8 @@ end;
   end;
 
   Class Function TBRPersistent.ClassIdentifier:Longword;
-  var
-    mData:  String;
   Begin
-    mData:=ObjectPath;
-    result:=TBRBuffer.ElfHash(mData[1],Length(mData) * SizeOf(Char));
+    result:=TBRBuffer.ElfHash(ObjectPath);
   end;
 
   (* ISRLPersistent: ObjectToStream *)
@@ -6924,7 +6904,7 @@ begin
   FMemory:=aMemory;
   FSize:=aDataLen;
   if FMemory=NIL then
-  Raise Exception.Create('Invalid memory pointer [NIL] error');
+  Raise EBRWriter.Create('Invalid memory pointer [NIL] error');
 end;
 
 function TBRWriterMemory.Write(const Data; DataLen: Integer): Integer;
@@ -6942,7 +6922,8 @@ begin
     inc(FOffset,mToMove);
   end else
   if (DataLen>0) then
-  Raise Exception.Create('Failed to write to memory, size exceeds allowed range error');
+  Raise EBRWriter.Create
+  ('Failed to write to memory, size exceeds allowed range error');
 end;
 
 Initialization
