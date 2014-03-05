@@ -82,9 +82,9 @@
   interface
 
   uses
-  System.Sysutils, System.classes,
+  System.Sysutils,
+  System.classes,
   System.Math,
-  System.Generics.Collections,
   {$IFDEF BR_SUPPORT_ZLIB}
   System.Zlib,
   {$ENDIF}
