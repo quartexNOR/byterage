@@ -73,6 +73,9 @@
                     automatically.
                   - Moved GUID conversion into TBRFieldGUID as class functions
                   - Removed older code no longer in use
+                  - Fixed TBRFieldString.asString bug
+                  - Removed lose function "JL_Fillword", now use the class
+                    function FillWord() directly
   ########################################################################### *)
 
   {.$DEFINE BR_SUPPORT_INTERNET}
@@ -912,7 +915,6 @@
     Function    asString:String;override;
   End;
 
-
   TBRCustomRecord = Class(TBRPersistent)
   Private
     FObjects:   TObjectList;
@@ -1104,8 +1106,6 @@ implementation
 Var
 _FieldClasses:  TBRRecordFieldArray;
 
-
-
 Procedure BRRegisterRecordField(AClass:TBRRecordFieldClass);
 var
   FLen: Integer;
@@ -1172,65 +1172,6 @@ Begin
   Value:=FClass.Create;
 end;
 
-  { Function JL_RightStr(Const Value:String;Count:Integer):String;
-  var
-    FLen: Integer;
-  Begin
-    FLen:=Length(Value);
-    If (FLen>0) and (Count>0) then
-    Begin
-      If Count>FLen then
-      Count:=FLen;
-      Result:=Copy(Value,(FLen-Count)+1,Count);
-    end else
-    result:='';
-  end;           }
-
-  Procedure JL_FillWord(dstAddr:PWord;Const inCount:Integer;Const Value:Word);
-  var
-    FTemp:  Longword;
-    FLongs: Integer;
-  Begin
-    FTemp:=Value shl 16 or Value;
-    FLongs:=inCount shr 3;
-    while FLongs>0 do
-    Begin
-      PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-      PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-      PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-      PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-      dec(FLongs);
-    end;
-
-    Case inCount mod 8 of
-    1:  dstAddr^:=Value;
-    2:  PLongword(dstAddr)^:=FTemp;
-    3:  Begin
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          dstAddr^:=Value;
-        end;
-    4:  Begin
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp;
-        end;
-    5:  Begin
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          dstAddr^:=Value;
-        end;
-    6:  Begin
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp;
-        end;
-    7:  Begin
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          PLongword(dstAddr)^:=FTemp; inc(PLongword(dstAddr));
-          dstAddr^:=Value;
-        end;
-    end;
-  end;
 
   //##########################################################################
   // TBRBufferFile
@@ -5179,7 +5120,7 @@ end;
         FLen:=SizeOf(FWord) * Times;
         FData:=Allocmem(FLen);
         try
-          JL_FillWord(FData,Times,FWord);
+          TBRBuffer.FillWord(FData,Times,FWord);
           Write(FData^,FLen);
         finally
           FreeMem(FData);
@@ -6384,11 +6325,14 @@ Begin
 end;
 
 Function TBRFieldString.GetValue:String;
+var
+  mLen: Integer;
 Begin
   If not Empty then
   Begin
-    SetLength(Result,Size div SizeOf(Char) );
-    If Read(0,Size,Result[1])<Size then //pointer(@Result[1])^)<Size then
+    mLen:=Size div SizeOf(Char);
+    SetLength(Result,mLen);
+    If Read(0,Size,Result[1])<(mLen * SizeOf(Char)) then //pointer(@Result[1])^)<Size then
     Raise EBRRecordFieldError.CreateFmt
     (ERR_RECORDFIELD_FailedGet,[FieldName]) else
     SignalRead;
@@ -6488,411 +6432,411 @@ Begin
 end;
 
 
-  //##########################################################################
-  // TBRPersistent
-  //##########################################################################
+//##########################################################################
+// TBRPersistent
+//##########################################################################
 
-  Constructor TBRPersistent.Create;
-  Begin
-    inherited;
-    FObjId:=ClassIdentifier;
+Constructor TBRPersistent.Create;
+Begin
+  inherited;
+  FObjId:=ClassIdentifier;
+end;
+
+function TBRPersistent.ObjectHasData:Boolean;
+Begin
+  result:=False;
+end;
+
+procedure TBRPersistent.DefineProperties(Filer: TFiler);
+begin
+  inherited;
+  filer.DefineBinaryProperty('$RES',ReadObjBin,WriteObjBin,ObjectHasData);
+end;
+
+procedure TBRPersistent.ReadObjBin(Stream: TStream);
+var
+  mReader:  TBRReaderStream;
+Begin
+  mReader:=TBRReaderStream.Create(Stream);
+  try
+    ObjectFrom(mReader);
+  finally
+    mReader.Free;
   end;
+end;
 
-  function TBRPersistent.ObjectHasData:Boolean;
-  Begin
-    result:=False;
+procedure TBRPersistent.WriteObjBin(Stream: TStream);
+var
+  mWriter:  TBRWriterStream;
+begin
+  mWriter:=TBRWriterStream.Create(Stream);
+  try
+    ObjectTo(mWriter);
+  finally
+    mWriter.Free;
   end;
+end;
 
-  procedure TBRPersistent.DefineProperties(Filer: TFiler);
-  begin
-    inherited;
-    filer.DefineBinaryProperty('$RES',ReadObjBin,WriteObjBin,ObjectHasData);
+Function TBRPersistent.ObjectIdentifier:Longword;
+Begin
+  result:=FObjId;
+end;
+
+Class Function TBRPersistent.ClassIdentifier:Longword;
+Begin
+  result:=TBRBuffer.ElfHash(ObjectPath);
+end;
+
+(* ISRLPersistent: ObjectToStream *)
+Procedure TBRPersistent.ObjectToStream(Const Stream:TStream);
+var
+  FWriter: TBRWriterStream;
+Begin
+  FWriter:=TBRWriterStream.Create(Stream);
+  try
+    ObjectTo(FWriter);
+  finally
+    FWriter.free;
   end;
+end;
 
-  procedure TBRPersistent.ReadObjBin(Stream: TStream);
-  var
-    mReader:  TBRReaderStream;
-  Begin
-    mReader:=TBRReaderStream.Create(Stream);
-    try
-      ObjectFrom(mReader);
-    finally
-      mReader.Free;
-    end;
+(* ISRLPersistent: ObjectToBinary *)
+Procedure TBRPersistent.ObjectToData(Const Binary:TBRBuffer);
+var
+  FWriter: TBRWriterBuffer;
+Begin
+  FWriter:=TBRWriterBuffer.Create(Binary);
+  try
+    ObjectTo(FWriter);
+  finally
+    FWriter.free;
   end;
+end;
 
-  procedure TBRPersistent.WriteObjBin(Stream: TStream);
-  var
-    mWriter:  TBRWriterStream;
-  begin
-    mWriter:=TBRWriterStream.Create(Stream);
-    try
-      ObjectTo(mWriter);
-    finally
-      mWriter.Free;
-    end;
-  end;
-
-  Function TBRPersistent.ObjectIdentifier:Longword;
-  Begin
-    result:=FObjId;
-  end;
-
-  Class Function TBRPersistent.ClassIdentifier:Longword;
-  Begin
-    result:=TBRBuffer.ElfHash(ObjectPath);
-  end;
-
-  (* ISRLPersistent: ObjectToStream *)
-  Procedure TBRPersistent.ObjectToStream(Const Stream:TStream);
-  var
-    FWriter: TBRWriterStream;
-  Begin
-    FWriter:=TBRWriterStream.Create(Stream);
-    try
-      ObjectTo(FWriter);
-    finally
-      FWriter.free;
-    end;
-  end;
-
-  (* ISRLPersistent: ObjectToBinary *)
-  Procedure TBRPersistent.ObjectToData(Const Binary:TBRBuffer);
-  var
-    FWriter: TBRWriterBuffer;
-  Begin
-    FWriter:=TBRWriterBuffer.Create(Binary);
-    try
-      ObjectTo(FWriter);
-    finally
-      FWriter.free;
-    end;
-  end;
-
-  (* ISRLPersistent: ObjectToBinary *)
-  Function TBRPersistent.ObjectToData:TBRBuffer;
-  Begin
-    Result:=TBRBufferMemory.Create;
-    try
-      ObjectToData(Result);
-    except
-      on e: exception do
-      Begin
-        FreeAndNil(Result);
-        Raise EBRPersistent.Create(e.Message);
-      end;
-    end;
-  end;
-
-  (* ISRLPersistent: ObjectToStream *)
-  Function TBRPersistent.ObjectToStream:TStream;
-  Begin
-    Result:=TMemoryStream.Create;
-    try
-      ObjectToStream(Result);
-      Result.Position:=0;
-    except
-      on e: exception do
-      Begin
-        FreeAndNil(Result);
-        Raise EBRPersistent.Create(e.message);
-      end;
-    end;
-  end;
-
-  Procedure TBRPersistent.ObjectFrom(Const Reader:TBRReader);
-  Begin
-    If Reader<>NIL then
+(* ISRLPersistent: ObjectToBinary *)
+Function TBRPersistent.ObjectToData:TBRBuffer;
+Begin
+  Result:=TBRBufferMemory.Create;
+  try
+    ObjectToData(Result);
+  except
+    on e: exception do
     Begin
-      If BeginUpdate then
+      FreeAndNil(Result);
+      Raise EBRPersistent.Create(e.Message);
+    end;
+  end;
+end;
+
+(* ISRLPersistent: ObjectToStream *)
+Function TBRPersistent.ObjectToStream:TStream;
+Begin
+  Result:=TMemoryStream.Create;
+  try
+    ObjectToStream(Result);
+    Result.Position:=0;
+  except
+    on e: exception do
+    Begin
+      FreeAndNil(Result);
+      Raise EBRPersistent.Create(e.message);
+    end;
+  end;
+end;
+
+Procedure TBRPersistent.ObjectFrom(Const Reader:TBRReader);
+Begin
+  If Reader<>NIL then
+  Begin
+    If BeginUpdate then
+    Begin
+      BeforeReadObject;
+      ReadObject(Reader);
+      AfterReadObject;
+      EndUpdate;
+    end;
+  end else
+  Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDREADER);
+end;
+
+Procedure TBRPersistent.ObjectTo(Const Writer:TBRWriter);
+Begin
+  If Writer<>NIl then
+  Begin
+    BeforeWriteObject;
+    WriteObject(Writer);
+    AfterWriteObject;
+  end else
+  Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDWRITER);
+end;
+
+(* ISRLPersistent: ObjectFromBinary *)
+Procedure TBRPersistent.ObjectFromData
+          (Const Binary:TBRBuffer;Const Disposable:Boolean);
+var
+  FReader: TBRReaderBuffer;
+Begin
+  FReader:=TBRReaderBuffer.Create(Binary);
+  try
+    ObjectFrom(FReader);
+  finally
+    FReader.free;
+    If Disposable then
+    Binary.free;
+  end;
+end;
+
+procedure TBRPersistent.Assign(Source:TPersistent);
+Begin
+  If Source<>NIL then
+  Begin
+    if (source is TBRPersistent) then
+    Begin
+      (* Always supports object of same class *)
+      if IBRObject(TBRPersistent(Source)).GetObjectClass=GetObjectClass then
       Begin
-        BeforeReadObject;
-        ReadObject(Reader);
-        AfterReadObject;
-        EndUpdate;
-      end;
-    end else
-    Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDREADER);
+        If Source<>Self then
+        ObjectFromData(TBRPersistent(Source).ObjectToData,True);
+      end else
+      (* no support, raise exception *)
+      Raise EBRPersistent.CreateFmt
+      (ERR_BR_PERSISTENCY_ASSIGNCONFLICT,
+      [TBRPersistent(Source).ObjectPath,ObjectPath]);
+    end;
   end;
+end;
 
-  Procedure TBRPersistent.ObjectTo(Const Writer:TBRWriter);
+Procedure TBRPersistent.BeforeWriteObject;
+Begin
+  AddObjectState([osReadWrite]);
+end;
+
+Procedure TBRPersistent.BeforeReadObject;
+Begin
+  AddObjectState([osReadWrite]);
+end;
+
+Procedure TBRPersistent.AfterReadObject;
+Begin
+  RemoveObjectState([osReadWrite]);
+end;
+
+procedure TBRPersistent.AfterWriteObject;
+Begin
+  RemoveObjectState([osReadWrite]);
+end;
+
+Procedure TBRPersistent.WriteObject(Const Writer:TBRWriter);
+Begin
+  (* write identifier to stream *)
+  Writer.WriteLong(FObjId);
+end;
+
+Procedure TBRPersistent.ReadObject(Const Reader:TBRReader);
+var
+  FReadId:  Longword;
+Begin
+  (* read identifier from stream *)
+  FReadId:=Reader.ReadLong;
+
+  If FReadId<>FObjId then
+  Raise EBRPersistent.CreateFmt
+  (ERR_BR_PERSISTENCY_INVALIDSIGNATURE,
+  [IntToHex(FReadId,8),IntToHex(FObjId,8)]);
+end;
+
+(* ISRLPersistent: ObjectFromStream *)
+Procedure TBRPersistent.ObjectFromStream
+          (Const Stream:TStream;Const Disposable:Boolean);
+var
+  FReader:  TBRReaderStream;
+Begin
+  FReader:=TBRReaderStream.Create(Stream);
+  try
+    ObjectFrom(FReader);
+  finally
+    FReader.free;
+    If Disposable then
+    Stream.free;
+  end;
+end;
+
+(* ISRLPersistent: ObjectfromFile *)
+Procedure TBRPersistent.ObjectfromFile(Const Filename:String);
+Begin
+  ObjectFromStream(TFileStream.Create(filename,
+  fmOpenRead or fmShareDenyWrite),True);
+end;
+
+(* ISRLPersistent: ObjectToFile *)
+Procedure TBRPersistent.ObjectToFile(Const Filename:String);
+var
+  FFile:  TFileStream;
+Begin
+  FFile:=TFileStream.Create(filename,fmCreate);
+  try
+    ObjectToStream(FFile);
+  finally
+    FFile.free;
+  end;
+end;
+
+Procedure TBRPersistent.BeforeUpdate;
+Begin
+end;
+
+procedure TBRPersistent.AfterUpdate;
+Begin
+end;
+
+Function TBRPersistent.BeginUpdate:Boolean;
+Begin
+  result:=QueryObjectState([osDestroying])=False;
+  if result then
   Begin
-    If Writer<>NIl then
+    inc(FUpdCount);
+    If FUpdCount=1 then
     Begin
-      BeforeWriteObject;
-      WriteObject(Writer);
-      AfterWriteObject;
-    end else
-    Raise EBRPersistent.Create(ERR_BR_PERSISTENCY_INVALIDWRITER);
-  end;
-
-  (* ISRLPersistent: ObjectFromBinary *)
-  Procedure TBRPersistent.ObjectFromData
-            (Const Binary:TBRBuffer;Const Disposable:Boolean);
-  var
-    FReader: TBRReaderBuffer;
-  Begin
-    FReader:=TBRReaderBuffer.Create(Binary);
-    try
-      ObjectFrom(FReader);
-    finally
-      FReader.free;
-      If Disposable then
-      Binary.free;
+      AddObjectState([osUpdating]);
+      BeforeUpdate;
     end;
   end;
+end;
 
-  procedure TBRPersistent.Assign(Source:TPersistent);
+procedure TBRPersistent.EndUpdate;
+Begin
+  If QueryObjectState([osUpdating]) then
   Begin
-    If Source<>NIL then
+    dec(FUpdCount);
+    If FUpdCount<1 then
     Begin
-      if (source is TBRPersistent) then
-      Begin
-        (* Always supports object of same class *)
-        if IBRObject(TBRPersistent(Source)).GetObjectClass=GetObjectClass then
-        Begin
-          If Source<>Self then
-          ObjectFromData(TBRPersistent(Source).ObjectToData,True);
-        end else
-        (* no support, raise exception *)
-        Raise EBRPersistent.CreateFmt
-        (ERR_BR_PERSISTENCY_ASSIGNCONFLICT,
-        [TBRPersistent(Source).ObjectPath,ObjectPath]);
-      end;
+      RemoveObjectState([osUpdating]);
+      AfterUpdate;
     end;
   end;
+end;
 
-  Procedure TBRPersistent.BeforeWriteObject;
+//##########################################################################
+// TBRObject
+//##########################################################################
+
+Constructor TBRObject.Create;
+Begin
+  inherited;
+  FState:=[osCreating];
+end;
+
+Procedure TBRObject.AfterConstruction;
+Begin
+  inherited;
+  FState:=FState - [osCreating];
+end;
+
+Procedure TBRObject.BeforeDestruction;
+Begin
+  FState:=FState + [osDestroying];
+  inherited;
+end;
+
+Function TBRObject.GetObjectClass:TBRObjectClass;
+Begin
+  Result:=TBRObjectClass(ClassType);
+end;
+
+Class Function TBRObject.ObjectPath:String;
+var
+  FAncestor:  TClass;
+Begin
+  SetLength(result,0);
+  FAncestor:=ClassParent;
+  While FAncestor<>NIL do
   Begin
-    AddObjectState([osReadWrite]);
-  end;
-
-  Procedure TBRPersistent.BeforeReadObject;
-  Begin
-    AddObjectState([osReadWrite]);
-  end;
-
-  Procedure TBRPersistent.AfterReadObject;
-  Begin
-    RemoveObjectState([osReadWrite]);
-  end;
-
-  procedure TBRPersistent.AfterWriteObject;
-  Begin
-    RemoveObjectState([osReadWrite]);
-  end;
-
-  Procedure TBRPersistent.WriteObject(Const Writer:TBRWriter);
-  Begin
-    (* write identifier to stream *)
-    Writer.WriteLong(FObjId);
-  end;
-
-  Procedure TBRPersistent.ReadObject(Const Reader:TBRReader);
-  var
-    FReadId:  Longword;
-  Begin
-    (* read identifier from stream *)
-    FReadId:=Reader.ReadLong;
-
-    If FReadId<>FObjId then
-    Raise EBRPersistent.CreateFmt
-    (ERR_BR_PERSISTENCY_INVALIDSIGNATURE,
-    [IntToHex(FReadId,8),IntToHex(FObjId,8)]);
-  end;
-
-  (* ISRLPersistent: ObjectFromStream *)
-  Procedure TBRPersistent.ObjectFromStream
-            (Const Stream:TStream;Const Disposable:Boolean);
-  var
-    FReader:  TBRReaderStream;
-  Begin
-    FReader:=TBRReaderStream.Create(Stream);
-    try
-      ObjectFrom(FReader);
-    finally
-      FReader.free;
-      If Disposable then
-      Stream.free;
-    end;
-  end;
-
-  (* ISRLPersistent: ObjectfromFile *)
-  Procedure TBRPersistent.ObjectfromFile(Const Filename:String);
-  Begin
-    ObjectFromStream(TFileStream.Create(filename,
-    fmOpenRead or fmShareDenyWrite),True);
-  end;
-
-  (* ISRLPersistent: ObjectToFile *)
-  Procedure TBRPersistent.ObjectToFile(Const Filename:String);
-  var
-    FFile:  TFileStream;
-  Begin
-    FFile:=TFileStream.Create(filename,fmCreate);
-    try
-      ObjectToStream(FFile);
-    finally
-      FFile.free;
-    end;
-  end;
-
-  Procedure TBRPersistent.BeforeUpdate;
-  Begin
-  end;
-
-  procedure TBRPersistent.AfterUpdate;
-  Begin
-  end;
-
-  Function TBRPersistent.BeginUpdate:Boolean;
-  Begin
-    result:=QueryObjectState([osDestroying])=False;
-    if result then
-    Begin
-      inc(FUpdCount);
-      If FUpdCount=1 then
-      Begin
-        AddObjectState([osUpdating]);
-        BeforeUpdate;
-      end;
-    end;
-  end;
-
-  procedure TBRPersistent.EndUpdate;
-  Begin
-    If QueryObjectState([osUpdating]) then
-    Begin
-      dec(FUpdCount);
-      If FUpdCount<1 then
-      Begin
-        RemoveObjectState([osUpdating]);
-        AfterUpdate;
-      end;
-    end;
-  end;
-
-  //##########################################################################
-  // TBRObject
-  //##########################################################################
-
-  Constructor TBRObject.Create;
-  Begin
-    inherited;
-    FState:=[osCreating];
-  end;
-
-  Procedure TBRObject.AfterConstruction;
-  Begin
-    inherited;
-    FState:=FState - [osCreating];
-  end;
-
-  Procedure TBRObject.BeforeDestruction;
-  Begin
-    FState:=FState + [osDestroying];
-    inherited;
-  end;
-
-  Function TBRObject.GetObjectClass:TBRObjectClass;
-  Begin
-    Result:=TBRObjectClass(ClassType);
-  end;
-
-  Class Function TBRObject.ObjectPath:String;
-  var
-    FAncestor:  TClass;
-  Begin
-    SetLength(result,0);
-    FAncestor:=ClassParent;
-    While FAncestor<>NIL do
-    Begin
-      If Length(Result)>0 then
-      Result:=(FAncestor.ClassName + '.' + Result) else
-      Result:=FAncestor.ClassName;
-      FAncestor:=FAncestor.ClassParent;
-    end;
     If Length(Result)>0 then
-    result:=result + '.' + ClassName else
-    result:=ClassName;
+    Result:=(FAncestor.ClassName + '.' + Result) else
+    Result:=FAncestor.ClassName;
+    FAncestor:=FAncestor.ClassParent;
   end;
+  If Length(Result)>0 then
+  result:=result + '.' + ClassName else
+  result:=ClassName;
+end;
 
-  Function TBRObject.GetParent:TObject;
+Function TBRObject.GetParent:TObject;
+Begin
+  result:=FParent;
+end;
+
+Procedure TBRObject.SetParent(Const Value:TObject);
+Begin
+  FParent:=Value;
+end;
+
+Function TBRObject.GetObjectState:TBRObjectState;
+Begin
+  result:=FState;
+end;
+
+Procedure TBRObject.AddObjectState(Const Value:TBRObjectState);
+Begin
+  FState:=FState + Value;
+end;
+
+Procedure TBRObject.RemoveObjectState(Const Value:TBRObjectState);
+Begin
+  FState:=FState - Value;
+end;
+
+Procedure TBRObject.SetObjectState(Const Value:TBRObjectState);
+Begin
+  FState:=Value;
+end;
+
+Function TBRObject.QueryObjectState(Const Value:TBRObjectState):Boolean;
+Begin
+  If (osCreating in Value) then
+  Result:=(osCreating in FState) else
+  Result:=False;
+
+  If (Result=False) and (osDestroying in Value) then
   Begin
-    result:=FParent;
+    If (osDestroying in FState) then
+    Result:=True;
   end;
 
-  Procedure TBRObject.SetParent(Const Value:TObject);
+  If (Result=False) and (osUpdating in Value) then
   Begin
-    FParent:=Value;
+    if (osUpdating in FState) then
+    Result:=True;
   end;
 
-  Function TBRObject.GetObjectState:TBRObjectState;
+  If (Result=False) and (osReadWrite in Value) then
   Begin
-    result:=FState;
+    if (osReadWrite in FState) then
+    Result:=True;
   end;
 
-  Procedure TBRObject.AddObjectState(Const Value:TBRObjectState);
-  Begin
-    FState:=FState + Value;
-  end;
+  If (Result=False) and (osSilent in Value) then
+  Result:=(osSilent in FState);
+end;
 
-  Procedure TBRObject.RemoveObjectState(Const Value:TBRObjectState);
-  Begin
-    FState:=FState - Value;
-  end;
+function TBRObject.QueryInterface(const IID:TGUID;out Obj):HResult;stdcall;
+Begin
+  If GetInterface(IID,Obj) then
+  Result:=S_OK else
+  Result:=E_NOINTERFACE;
+end;
 
-  Procedure TBRObject.SetObjectState(Const Value:TBRObjectState);
-  Begin
-    FState:=Value;
-  end;
+function TBRObject._AddRef:Integer;stdcall;
+Begin
+  (* Inform COM that no reference counting is required *)
+  Result:=-1;
+end;
 
-  Function TBRObject.QueryObjectState(Const Value:TBRObjectState):Boolean;
-  Begin
-    If (osCreating in Value) then
-    Result:=(osCreating in FState) else
-    Result:=False;
-
-    If (Result=False) and (osDestroying in Value) then
-    Begin
-      If (osDestroying in FState) then
-      Result:=True;
-    end;
-
-    If (Result=False) and (osUpdating in Value) then
-    Begin
-      if (osUpdating in FState) then
-      Result:=True;
-    end;
-
-    If (Result=False) and (osReadWrite in Value) then
-    Begin
-      if (osReadWrite in FState) then
-      Result:=True;
-    end;
-
-    If (Result=False) and (osSilent in Value) then
-    Result:=(osSilent in FState);
-  end;
-
-  function TBRObject.QueryInterface(const IID:TGUID;out Obj):HResult;stdcall;
-  Begin
-    If GetInterface(IID,Obj) then
-    Result:=S_OK else
-    Result:=E_NOINTERFACE;
-  end;
-
-  function TBRObject._AddRef:Integer;stdcall;
-  Begin
-    (* Inform COM that no reference counting is required *)
-    Result:=-1;
-  end;
-
-  function TBRObject._Release:Integer;stdcall;
-  Begin
-    (* Inform COM that no reference counting is required *)
-    Result:=-1;
-  end;
+function TBRObject._Release:Integer;stdcall;
+Begin
+  (* Inform COM that no reference counting is required *)
+  Result:=-1;
+end;
 
 //############################################################################
 // TBRWriterMemory
