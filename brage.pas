@@ -223,9 +223,9 @@
     (* Implements:: IBROwnedObject *)
     Function    GetParent:TObject;virtual;
     Property    Parent:TObject read GetParent;
+    Procedure   SetParent(Const Value:TObject);
   Strict protected
     (* Implements:: IBRObject *)
-    Procedure   SetParent(Const Value:TObject);
     Procedure   SetObjectState(Const Value:TBRObjectState);
     Procedure   AddObjectState(Const Value:TBRObjectState);
     Procedure   RemoveObjectState(Const Value:TBRObjectState);
@@ -276,6 +276,7 @@
     Procedure   ReadObject(Const Reader:TBRReader);virtual;
   protected
     (* Standard persistence *)
+    function    ObjectHasData:Boolean;virtual;
     Procedure   ReadObjBin(Stream:TStream);virtual;
     procedure   WriteObjBin(Stream:TStream);virtual;
     procedure   DefineProperties(Filer: TFiler);override;
@@ -324,10 +325,11 @@
      fixed chunks of this type *)
   TBRIOCache = packed Array [1..CNT_BR_IOCACHE_SIZE] of Byte;
 
+
   (* This is the basic buffer class. It is an abstract class and should not be
      created. Create objects from classes that decend from this and that
      implements the buffering you need to work with (memory, stream, temp etc *)
-  TBRBuffer = Class(TPersistent)
+  TBRBuffer = Class(TBRPersistent)
   private
     (* Buffer capabilities. I.E: Readable, writeable etc. *)
     FCaps:      TBRBufferCapabilities;
@@ -345,9 +347,10 @@
 
         NOTE: Do not override these methods, use the functions defined
               in extended persistance when modifying this object *)
-    Procedure   ReadObjBin(Stream:TStream);
-    procedure   WriteObjBin(Stream:TStream);
-    procedure   DefineProperties(Filer: TFiler);override;
+    //Procedure   ReadObjBin(Stream:TStream);
+    //procedure   WriteObjBin(Stream:TStream);
+    //procedure   DefineProperties(Filer: TFiler);override;
+    Function    ObjectHasData:Boolean;override;
   Protected
     (*  Extended persistence.
         The function ObjectHasData() is called by the normal VCL
@@ -358,13 +361,12 @@
         NOTE: To extend the functionality of this object please override
         ReadObject() and WriteObject(). The object will take care of
         everything else. *)
-    Function    ObjectHasData:Boolean;
-    Procedure   BeforeReadObject;virtual;
-    Procedure   AfterReadObject;virtual;
-    Procedure   BeforeWriteObject;virtual;
-    Procedure   AfterWriteObject;virtual;
-    Procedure   ReadObject(Reader:TReader);virtual;
-    Procedure   WriteObject(Writer:TWriter);virtual;
+    Procedure   BeforeReadObject;override;
+    (* Procedure   AfterReadObject;override;
+    Procedure   BeforeWriteObject;override;
+    Procedure   AfterWriteObject;override; *)
+    Procedure   ReadObject(Const Reader:TBRReader);override;
+    Procedure   WriteObject(Const Writer:TBRWriter);override;
   Protected
     (* Call this to determine if the object is empty (holds no data) *)
     Function    GetEmpty:Boolean;virtual;
@@ -394,7 +396,6 @@
     Property    ZLibDeflateEvents:TBRDeflateEvents read FZDEvents write FZDEvents;
     Property    ZLibInflateEvents:TBRInflateEvents read FZIEvents write FZIEvents;
     {$ENDIF}
-
 
     Procedure   Assign(Source:TPersistent);Override;
 
@@ -455,11 +456,17 @@
 
     (* Export data from the buffer into various output targets *)
     Function    ExportTo(aByteIndex:Int64;
-                aLength:Integer;Const Writer:TWriter):Integer;
+                aLength:Integer;Const Writer:TWriter):Integer;overload;
+
+    Function    ExportTo(aByteIndex:Int64;
+                aLength:Integer;Const Writer:TBRWriter):Integer;overload;
 
     (* Import data from various input sources *)
     Function    ImportFrom(aByteIndex:Int64;
-                aLength:Integer;Const Reader:TReader):Integer;
+                aLength:Integer;Const Reader:TReader):Integer;overload;
+
+    function    ImportFrom(aByteIndex:Int64;
+                aLength:Integer;Const Reader:TBRReader):Integer;overload;
 
     {$IFDEF BR_SUPPORT_ZLIB}
     Procedure   CompressTo(Const Target:TBRBuffer);overload;
@@ -689,6 +696,18 @@
     Constructor Create(Const Target:TStream);reintroduce;
   End;
 
+  TBRWriterMemory = Class(TBRWriter)
+  Private
+    FMemory:    PByte;
+    FSize:      Integer;
+    FOffset:    Integer;
+  public
+    Property    Memory:PByte read FMemory;
+    Property    MemorySize:Integer read FSize;
+    Function    Write(Const Data;DataLen:Integer):Integer;override;
+    Constructor Create(Const aMemory:PByte;aDataLen:Integer);reintroduce;
+  End;
+
   (* reader class for stream *)
   TBRReaderStream = Class(TBRReader)
   Private
@@ -706,13 +725,17 @@
     procedure   writeBit(const aIndex:NativeInt;
                 const aValue:Boolean);
     function    getCount:NativeUInt;
+    function    getEmpty:Boolean;
   public
     Property    Buffer:TBRBuffer read FBuffer;
     Property    Bits[const aIndex:NativeInt]:Boolean
                 read readBit write writeBit;
     Property    Count:NativeUInt read getCount;
+    Property    Empty:Boolean read getEmpty;
     function    FindIdleBit(const aFromIndex:NativeUInt;
                 out aIdleBitIndex:NativeUInt):Boolean;
+    Procedure   SetBitRange(First,Last:NativeUInt;
+                Const Bitvalue:Boolean);
     function    asString(const aLineLen:Integer=32):String;
     constructor Create(Const aBuffer:TBRBuffer);virtual;
   End;
@@ -763,8 +786,8 @@
   Protected
     Function    GetDisplayName:String;virtual;
     Procedure   BeforeReadObject;override;
-    Procedure   ReadObject(Reader:TReader);override;
-    Procedure   WriteObject(Writer:TWriter);override;
+    Procedure   ReadObject(const Reader:TBRReader);override;
+    Procedure   WriteObject(const Writer:TBRWriter);override;
     Procedure   DoReleaseData;override;
   Protected
     Procedure   SignalWrite;
@@ -886,7 +909,7 @@
     Property    Length:Integer read FLength write SetFieldLength;
     Property    Explicit:Boolean read FExplicit write FExplicit;
     Function    asString:String;override;
-    Constructor Create;virtual;
+    Constructor Create;override;
   End;
 
   TBRFieldLong = Class(TBRRecordField)
@@ -901,7 +924,7 @@
   End;
 
 
-  TBRCustomRecord = Class(TPersistent)
+  TBRCustomRecord = Class(TBRPersistent)
   Private
     FObjects:   TObjectList;
     Function    GetCount:Integer;
@@ -917,6 +940,10 @@
     Property    Items[const index:Integer]:TBRRecordField
                 read GetItem write SetItem;
     Property    Count:Integer read GetCount;
+  protected
+    Procedure   BeforeReadObject;Override;
+    Procedure   WriteObject(Const Writer:TBRWriter);Override;
+    Procedure   ReadObject(Const Reader:TBRReader);Override;
   Public
     Function    Add(const aName:String;
                 Const aFieldClass:TBRRecordFieldClass):TBRRecordField;
@@ -946,13 +973,12 @@
 
     Procedure   Clear;virtual;
 
-    procedure   Assign(source:TPersistent);override;
+    //procedure   Assign(source:TPersistent);override;
+    //function    toStream:TStream;virtual;
+    //function    toBuffer:TBRBuffer;virtual;
 
-    function    toStream:TStream;virtual;
-    function    toBuffer:TBRBuffer;virtual;
-
-    Procedure   SaveToStream(Const stream:TStream);virtual;
-    procedure   LoadFromStream(Const stream:TStream);virtual;
+    //Procedure   SaveToStream(Const stream:TStream);virtual;
+    //procedure   LoadFromStream(Const stream:TStream);virtual;
 
     Function    IndexOf(const aName:String):Integer;
     Function    ObjectOf(const aName:String):TBRRecordField;
@@ -2268,7 +2294,7 @@ end;
     {$ENDIF}
   end;
 
-  Procedure TBRBuffer.AfterReadObject;
+  (* Procedure TBRBuffer.AfterReadObject;
   Begin
   end;
 
@@ -2278,18 +2304,24 @@ end;
 
   Procedure TBRBuffer.AfterWriteObject;
   Begin
-  end;
+  end;      *)
 
-  Procedure TBRBuffer.ReadObject(Reader:TReader);
+  Procedure TBRBuffer.ReadObject(const Reader:TBRReader);
   var
     mTotal: Int64;
   Begin
     {$IFDEF BR_DEBUG}
     try
     {$ENDIF}
-    Reader.Read(mTotal,SizeOf(mTotal));
+
+    inherited;
+
+    mTotal:=Reader.ReadInt64;
     If mTotal>0 then
-    ImportFrom(0,mTotal,Reader);
+    Begin
+      ImportFrom(0,mTotal,Reader);
+    end;
+
     {$IFDEF BR_DEBUG}
     except
       on e: exception do
@@ -2299,15 +2331,18 @@ end;
     {$ENDIF}
   end;
 
-  Procedure TBRBuffer.WriteObject(Writer:TWriter);
+  Procedure TBRBuffer.WriteObject(const Writer:TBRWriter);
   var
     mSize:  Int64;
   Begin
     {$IFDEF BR_DEBUG}
     try
     {$ENDIF}
+
+    inherited;
+
     mSize:=Size;
-    Writer.write(mSize,SizeOf(mSize));
+    Writer.WriteInt64(mSize);
     if mSize>0 then
     self.ExportTo(0,mSize,Writer);
     {$IFDEF BR_DEBUG}
@@ -2319,7 +2354,7 @@ end;
     {$ENDIF}
   end;
 
-  Procedure TBRBuffer.ReadObjBin(Stream:TStream);
+  (* Procedure TBRBuffer.ReadObjBin(Stream:TStream);
   var
     mReader:  TReader;
   Begin
@@ -2341,9 +2376,9 @@ end;
       (CNT_ERR_BTRG_BASE,['ReadObjBin',e.classname,e.message]);
     end;
     {$ENDIF}
-  end;
+  end;  *)
 
-  procedure TBRBuffer.WriteObjBin(Stream:TStream);
+  (* procedure TBRBuffer.WriteObjBin(Stream:TStream);
   var
     mWriter:  TWriter;
   Begin
@@ -2366,9 +2401,9 @@ end;
       (CNT_ERR_BTRG_BASE,['WriteObjBin',e.classname,e.message]);
     end;
     {$ENDIF}
-  end;
+  end; *)
 
-  procedure TBRBuffer.DefineProperties(Filer:TFiler);
+  (* procedure TBRBuffer.DefineProperties(Filer:TFiler);
   Begin
     {$IFDEF BR_DEBUG}
     try
@@ -2382,7 +2417,7 @@ end;
       (CNT_ERR_BTRG_BASE,['DefineProperties',e.classname,e.message]);
     end;
     {$ENDIF}
-  end;
+  end;   *)
 
   Procedure TBRBuffer.DoFillData(Start:Int64;FillLength:Int64;
             Const Data;DataLen:Integer);
@@ -3758,6 +3793,72 @@ end;
                 with persistence.
       Comments: This method calls Write() to do the actual reading *)
   Function  TBRBuffer.ExportTo(aByteIndex:Int64;
+            aLength:Integer;Const Writer:TBRWriter):Integer;
+  var
+    mToRead:  Integer;
+    mRead:    Integer;
+    mCache:   TBRIOCache;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    (* Initialize *)
+    Result:=0;
+
+    (* Check that buffer supports reading *)
+    If (mcRead in FCaps) then
+    Begin
+      (* Check length of export *)
+      If aLength>0 then
+      Begin
+        (* Validate writer PTR *)
+        If Writer<>NIL then
+        Begin
+          (* Keep going while there is data *)
+          While aLength>0 do
+          Begin
+            (* Clip prefetch to actual length *)
+            mToRead:=EnsureRange(SizeOf(mCache),0,aLength);
+
+            (* read from our buffer *)
+            mRead:=Read(aByteIndex,mToRead,mCache);
+
+            (* Anything read? *)
+            If mRead>0 then
+            Begin
+              (* output data to writer *)
+              Writer.Write(mCache,mRead);
+
+              (* update variables *)
+              aByteIndex:=aByteIndex + mRead;
+              aLength:=aLength - mRead;
+              result:=result + mRead;
+            end else
+            Break;
+          end;
+
+        end else
+        Raise EBRBufferError.Create(CNT_ERR_BTRG_INVALIDDATATARGET);
+      end else
+      Raise EBRBufferError.Create(CNT_ERR_BTRG_EMPTY);
+    end else
+    Raise EBRBufferError.Create(CNT_ERR_BTRG_READNOTSUPPORTED);
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['ExportTo',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+
+  (*  Method:   ExportTo()
+      Purpose:  The ExportTo method allows you to read from the buffer,
+                but output the data to an alternative target. In this case
+                a TWriter class, which comes in handy when working
+                with persistence.
+      Comments: This method calls Write() to do the actual reading *)
+  Function  TBRBuffer.ExportTo(aByteIndex:Int64;
             aLength:Integer;Const Writer:TWriter):Integer;
   var
     mToRead:  Integer;
@@ -3874,6 +3975,64 @@ end;
       on e: exception do
       Raise EBRBufferError.CreateFmt
       (CNT_ERR_BTRG_BASE,['Read',e.classname,e.message]);
+    end;
+    {$ENDIF}
+  end;
+
+  (*  Method:   ImportFrom()
+      Purpose:  The ImportFrom method allows you to write to the buffer,
+                but using an alternative datasource. In this case a TReader
+                class, which comes in handy when working with persistence.
+      Comments: This method calls Write() to do the actual writing  *)
+  Function  TBRBuffer.ImportFrom(aByteIndex:Int64;
+            aLength:Integer;Const Reader:TBRReader):Integer;
+  var
+    mToRead:  Integer;
+    mCache:   TBRIOCache;
+  Begin
+    {$IFDEF BR_DEBUG}
+    try
+    {$ENDIF}
+    (* Initialize *)
+    Result:=0;
+
+    (* Check that buffer supports writing *)
+    If (mcWrite in FCaps) then
+    Begin
+      (* Check that Reader PTR is valid *)
+      If (Reader<>NIL) then
+      Begin
+        (* keep going until no more data *)
+        While aLength>0 do
+        Begin
+          (* Clip prefetch to make sure we dont read to much *)
+          mToRead:=EnsureRange(SizeOf(mCache),0,aLength);
+
+          (* Anything to read after clipping? *)
+          if mToRead>0 then
+          Begin
+            (* read from source *)
+            Reader.Read(mCache,mToRead);
+
+            (* write to target *)
+            Write(aByteIndex,mToRead,mCache);
+
+            (* update variables *)
+            result:=result + mToRead;
+            aByteIndex:=aByteIndex + mToRead;
+            aLength:=aLength - mToRead;
+          end else
+          Break;
+        end;
+      end else
+      Raise EBRBufferError.Create(CNT_ERR_BTRG_INVALIDDATASOURCE);
+    end else
+    Raise EBRBufferError.Create(CNT_ERR_BTRG_WRITENOTSUPPORTED);
+    {$IFDEF BR_DEBUG}
+    except
+      on e: exception do
+      Raise EBRBufferError.CreateFmt
+      (CNT_ERR_BTRG_BASE,['ImportFrom',e.classname,e.message]);
     end;
     {$ENDIF}
   end;
@@ -5279,6 +5438,85 @@ Begin
   Result:=FBuffer.Size shl 3;
 end;
 
+function TBRBitAccess.getEmpty:Boolean;
+begin
+  result:=FBuffer.Size=0;
+end;
+
+  Procedure TBRBitAccess.SetBitRange(First,Last:NativeUInt;
+            Const Bitvalue:Boolean);
+  var
+    x:        NativeUInt;
+    //FLongs:   NativeInt;
+    //FSingles: NativeInt;
+    //FCount:   NativeUInt;
+  Begin
+    //If FData<>NIL then
+    //Begin
+      If  First<Count then
+      Begin
+        If Last<Count then
+        Begin
+          (* Conditional swap *)
+          If First>Last then
+          Begin
+            x:=last;
+            last:=First;
+            First:=x;
+            //SRLSwap(First,Last);
+          end;
+
+          x:=First;
+          While x<=Last do
+          Begin
+            writeBit(x,BitValue);
+          end;
+
+          {
+          (* get totals, take ZERO into account *)
+          FCount:=SRLDiff(First,Last,True);
+
+          (* use refactoring & loop reduction *)
+          FLongs:=Integer(FCount shr 3);
+
+          x:=First;
+
+          while FLongs>0 do
+          Begin
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            SetBit(x,Bitvalue);inc(x);
+            dec(FLongs);
+          end;
+
+          (* process singles *)
+          FSingles:=TSRLInt(FCount mod 8);
+          while FSingles>0 do
+          Begin
+            SetBit(x,Bitvalue);inc(x);
+            dec(FSingles);
+          end; }
+
+        end else
+        Begin
+          If First=Last then
+          WriteBit(First,True) else
+          Raise Exception.Create('Invalid bit index');
+          //(ERR_SRLBitBuffer_InvalidBitIndex,[FBitsMax,Last]);
+        end;
+      end else
+      Raise Exception.Create('Invalid bit index');
+      //Raise GetException.CreateFmt(ERR_SRLBitBuffer_InvalidBitIndex,
+      //[FBitsMax,First]);
+    //end else
+    //Raise GetException.Create(ERR_SRLBitBuffer_BitBufferEmpty);
+  end;
+
 
 //############################################################################
 // TBRPartsAccess
@@ -5482,7 +5720,7 @@ Begin
   inherited;
 end;
 
-procedure TBRCustomRecord.Assign(source:TPersistent);
+(* procedure TBRCustomRecord.Assign(source:TPersistent);
 var
   mStream:  TStream;
 begin
@@ -5497,14 +5735,14 @@ begin
     end;
   end else
   inherited;
-end;
+end;  *)
 
 Procedure TBRCustomRecord.Clear;
 Begin
   FObjects.Clear;
 end;
 
-function TBRCustomRecord.toStream:TStream;
+(* function TBRCustomRecord.toStream:TStream;
 Begin
   result:=TMemoryStream.Create;
   try
@@ -5517,9 +5755,9 @@ Begin
       Raise;
     end;
   end;
-end;
+end; *)
 
-function TBRCustomRecord.toBuffer:TBRBuffer;
+(* function TBRCustomRecord.toBuffer:TBRBuffer;
 var
   mAdapter: TBRStreamAdapter;
 Begin
@@ -5538,26 +5776,65 @@ Begin
       Raise;
     end;
   end;
+end; *)
+
+Procedure TBRCustomRecord.BeforeReadObject;
+begin
+  inherited;
+  FObjects.Clear;
 end;
 
-Procedure TBRCustomRecord.SaveToStream(Const stream:TStream);
+Procedure TBRCustomRecord.WriteObject(Const Writer:TBRWriter);
 var
   x:  Integer;
-  mWriter:  TWriter;
-  mHead:  Longword;
 Begin
-  mWriter:=TWriter.Create(stream,1024);
+  inherited;
+  Writer.WriteInt(FObjects.Count);
+  for x:=0 to FObjects.Count-1 do
+  begin
+    Writer.WriteString(Items[x].ClassName);
+    IBRPersistent(items[x]).ObjectTo(Writer);
+  end;
+end;
+
+Procedure TBRCustomRecord.ReadObject(Const Reader:TBRReader);
+var
+  x, mCount:Integer;
+  mId:  String;
+  mField: TBRRecordField;
+Begin
+  inherited;
+  mCount:=Reader.ReadInt;
+  if mCount>0 then
+  begin
+    for x:=0 to mCount-1 do
+    begin
+      mId:=Reader.ReadString;
+      if BRRecordInstanceFromName(mId,mField) then
+      Begin
+        FObjects.Add(mField);
+        IBRPersistent(mField).ObjectFrom(Reader);
+      end;
+    end;
+  end;
+end;
+
+(* Procedure TBRCustomRecord.SaveToStream(Const stream:TStream);
+var
+  x:  Integer;
+  mWriter:  TBRWriter;
+Begin
+  mWriter:=TBRWriterStream.Create(stream);
   try
-    mHead:=CNT_RECORD_HEADER;
-    mWriter.Write(mHead,SizeOf(mHead));
-    mWriter.WriteInteger(FObjects.Count);
+    mWriter.WriteLong(CNT_RECORD_HEADER);
+    mWriter.WriteInt(FObjects.Count);
     for x:=0 to FObjects.Count-1 do
     Begin
       mWriter.WriteString(items[x].ClassName);
-      items[x].WriteObject(mWriter);
+      IBRPersistent(items[x]).ObjectTo(mWriter);
+      //items[x].WriteObject(mWriter);
     end;
   finally
-    mWriter.FlushBuffer;
     mWriter.Free;
   end;
 end;
@@ -5565,26 +5842,27 @@ end;
 procedure TBRCustomRecord.LoadFromStream(Const stream:TStream);
 var
   x:  Integer;
-  mReader:  TReader;
+  mReader:  TBRReader;
   mHead:  Longword;
   mCount: Integer;
   mName:  String;
   mField: TBRRecordField;
 Begin
   Clear;
-  mReader:=TReader.Create(stream,1024);
+  mReader:=TBRReaderStream.Create(stream);
   try
-    mReader.Read(mHead,SizeOf(mHead));
+    mHead:=mReader.ReadLong;
     if mHead=CNT_RECORD_HEADER then
     begin
-      mCount:=mReader.ReadInteger;
+      mCount:=mReader.ReadInt;
       for x:=0 to mCount-1 do
       Begin
         mName:=mReader.ReadString;
         if BRRecordInstanceFromName(mName,mField) then
         Begin
           self.FObjects.Add(mField);
-          mField.ReadObject(mReader);
+          IBRPersistent(mField).ObjectFrom(mReader);
+          //mField.ReadObject(mReader);
         end else
         Raise EBRRecordError.CreateFmt
         ('Unknown field class [%s] error',[mName]);
@@ -5594,7 +5872,7 @@ Begin
   finally
     mReader.Free;
   end;
-end;
+end;  *)
 
 Procedure TBRCustomRecord.WriteInt(const aName:String;const Value:Integer);
 var
@@ -6306,17 +6584,17 @@ Begin
   FNameHash:=0;
 end;
 
-Procedure TBRRecordField.ReadObject(Reader:TReader);
+Procedure TBRRecordField.ReadObject(const Reader:TBRReader);
 Begin
   inherited;
   FNameHash:=Reader.ReadInt64;
   FName:=Reader.ReadString;
 end;
 
-Procedure TBRRecordField.WriteObject(Writer:TWriter);
+Procedure TBRRecordField.WriteObject(const Writer:TBRWriter);
 Begin
   inherited;
-  Writer.WriteInteger(FNameHash);
+  Writer.WriteInt64(FNameHash);
   Writer.WriteString(FName);
 end;
 
@@ -6337,10 +6615,15 @@ end;
     FObjId:=ClassIdentifier;
   end;
 
+  function TBRPersistent.ObjectHasData:Boolean;
+  Begin
+    result:=False;
+  end;
+
   procedure TBRPersistent.DefineProperties(Filer: TFiler);
   begin
     inherited;
-    filer.DefineBinaryProperty('$RES',ReadObjBin,WriteObjBin,true);
+    filer.DefineBinaryProperty('$RES',ReadObjBin,WriteObjBin,ObjectHasData);
   end;
 
   procedure TBRPersistent.ReadObjBin(Stream: TStream);
@@ -6730,6 +7013,37 @@ end;
     (* Inform COM that no reference counting is required *)
     Result:=-1;
   end;
+
+//############################################################################
+// TBRWriterMemory
+//############################################################################
+
+constructor TBRWriterMemory.Create(const aMemory: PByte; aDataLen: Integer);
+begin
+  Inherited Create;
+  FMemory:=aMemory;
+  FSize:=aDataLen;
+  if FMemory=NIL then
+  Raise Exception.Create('Invalid memory pointer [NIL] error');
+end;
+
+function TBRWriterMemory.Write(const Data; DataLen: Integer): Integer;
+var
+  mTarget:  PByte;
+  mToMove:  Integer;
+begin
+  mTarget:=FMemory;
+  inc(mTarget,FOffset);
+  mToMove:=EnsureRange(DataLen,0, FSize - FOffset);
+  result:=mToMove;
+  if mToMove>0 then
+  Begin
+    move(Data,mTarget^,mToMove);
+    inc(FOffset,mToMove);
+  end else
+  if (DataLen>0) then
+  Raise Exception.Create('Failed to write to memory, size exceeds allowed range error');
+end;
 
 Initialization
 Begin
